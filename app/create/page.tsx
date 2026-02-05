@@ -24,13 +24,15 @@ export default function Create() {
     setStepIndex(0);
 
     const timeouts = steps.map((_, i) =>
-      setTimeout(() => setStepIndex(i), i * 1200)
+      setTimeout(() => {
+        setStepIndex(i);
+      }, i * 1200)
     );
 
     const finishTimeout = setTimeout(() => {
       setLoading(false);
       setCompleted(true);
-    }, steps.length * 1200 + 400);
+    }, steps.length * 1200 + 500);
 
     return () => {
       timeouts.forEach(clearTimeout);
@@ -43,11 +45,11 @@ export default function Create() {
     <>
       {/* LOADER */}
       {loading && (
-        <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
           <div className="text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
 
-            <p className="text-xl font-semibold animate-pulse">
+            <p className="text-xl font-semibold animate-pulse text-white">
               {steps[stepIndex]}
             </p>
           </div>
@@ -56,7 +58,7 @@ export default function Create() {
 
       {/* RESULT */}
       {completed && (
-        <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
           
           <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-sm border border-neutral-800">
             
@@ -67,7 +69,7 @@ export default function Create() {
 
             <div className="p-6 text-center">
               
-              <h2 className="text-2xl font-bold">
+              <h2 className="text-2xl font-bold text-white">
                 Sophia Carter
               </h2>
 
@@ -132,10 +134,7 @@ export default function Create() {
 
             {/* DEMO */}
             <button
-              onClick={() => {
-                setShowPaywall(false);
-                setShowVideo(true);
-              }}
+              onClick={() => setShowVideo(true)}
               className="w-full py-5 bg-indigo-600 rounded-2xl text-lg font-semibold hover:bg-indigo-500 transition"
             >
               ▶ Watch AI Demo
@@ -201,17 +200,16 @@ export default function Create() {
             </div>
 
           </div>
-
         </div>
       )}
 
-      {/* 🔒 PAYWALL — ALWAYS ON TOP */}
+      {/* 🔒 PAYWALL */}
       {showPaywall && (
-        <div className="fixed inset-0 bg-black/95 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50">
           
-          <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md shadow-2xl border border-neutral-800">
+          <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md w-[90%] shadow-2xl border border-neutral-800">
             
-            <h2 className="text-2xl font-bold mb-3">
+            <h2 className="text-3xl font-bold mb-3 text-white tracking-tight">
               Unlock AI Video Generation
             </h2>
 
@@ -219,13 +217,18 @@ export default function Create() {
               Create studio-quality presenter videos without cameras, actors, or production teams.
             </p>
 
-            {/* BIG PRICE */}
+            {/* PRICE */}
             <div className="mb-8">
-              <span className="text-6xl font-bold">
+              <div className="text-6xl font-bold text-white tracking-tight">
                 $29
-              </span>
-              <div className="text-neutral-400">
+              </div>
+
+              <div className="text-neutral-400 mt-1">
                 per month
+              </div>
+
+              <div className="text-sm text-neutral-500 mt-2">
+                Cancel anytime
               </div>
             </div>
 
@@ -237,17 +240,16 @@ export default function Create() {
 
             <button
               onClick={() => setShowPaywall(false)}
-              className="text-neutral-500 hover:text-neutral-300"
+              className="text-neutral-500 hover:text-neutral-300 transition"
             >
               Maybe later
             </button>
 
           </div>
-
         </div>
       )}
 
-      {/* CREATE */}
+      {/* CREATE SCREEN */}
       {!studio && !loading && !completed && (
         <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
           <div className="max-w-3xl w-full">
