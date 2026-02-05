@@ -1,33 +1,34 @@
 "use client";
 import { useState, useEffect } from "react";
-const steps = [
-  "Analyzing your request...",
-  "Designing presenter appearance...",
-  "Generating natural voice...",
-  "Building personality...",
-  "Finalizing your AI presenter..."
-];
-
-const [stepIndex, setStepIndex] = useState(0);
-useEffect(() => {
-  if (!loading) return;
-
-  const interval = setInterval(() => {
-    setStepIndex((prev) => {
-      if (prev === steps.length - 1) {
-        clearInterval(interval);
-        return prev;
-      }
-      return prev + 1;
-    });
-  }, 1200);
-
-  return () => clearInterval(interval);
-}, [loading]);
-
 
 export default function Create() {
+
   const [loading, setLoading] = useState(false);
+  const [stepIndex, setStepIndex] = useState(0);
+
+  const steps = [
+    "Analyzing your request...",
+    "Designing presenter appearance...",
+    "Generating natural voice...",
+    "Building personality...",
+    "Finalizing your AI presenter..."
+  ];
+
+  useEffect(() => {
+    if (!loading) return;
+
+    const interval = setInterval(() => {
+      setStepIndex((prev) => {
+        if (prev === steps.length - 1) {
+          clearInterval(interval);
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, [loading]);
 
   return (
     <>
@@ -35,13 +36,11 @@ export default function Create() {
         <div className="fixed inset-0 bg-black flex items-center justify-center">
           <div className="text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
-            <p className="text-xl font-semibold">
-             {steps[stepIndex]}
 
+            <p className="text-xl font-semibold">
+              {steps[stepIndex]}
             </p>
-            <p className="text-neutral-400 mt-2">
-             
-            </p>
+
           </div>
         </div>
       )}
@@ -57,7 +56,6 @@ export default function Create() {
             Follow the steps below to generate a professional digital identity in seconds.
           </p>
 
-          {/* STEP 1 */}
           <div className="mb-10">
             <h2 className="text-xl font-semibold mb-3">
               Step 1 — Choose appearance
@@ -81,7 +79,6 @@ export default function Create() {
             </div>
           </div>
 
-          {/* STEP 2 */}
           <div className="mb-10">
             <h2 className="text-xl font-semibold mb-3">
               Step 2 — Pick a voice
@@ -95,35 +92,3 @@ export default function Create() {
               <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">
                 Energetic
               </button>
-
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">
-                Calm
-              </button>
-            </div>
-          </div>
-
-          {/* STEP 3 */}
-          <div className="mb-12">
-            <h2 className="text-xl font-semibold mb-3">
-              Step 3 — What will your presenter talk about?
-            </h2>
-
-            <textarea
-              className="w-full h-28 bg-neutral-900 rounded-xl p-4 outline-none focus:ring-2 focus:ring-white"
-              placeholder="Example: A fitness expert helping busy professionals stay in shape..."
-            />
-          </div>
-
-          {/* CTA */}
-          <button
-            onClick={() => setLoading(true)}
-            className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition"
-          >
-            Generate Presenter
-          </button>
-
-        </div>
-      </main>
-    </>
-  );
-}
