@@ -1,5 +1,24 @@
-export default function Create() {
+
+"use client";
+import { useState } from "react";
+eexport default function Create() {
+  const [loading, setLoading] = useState(false);
+
   return (
+    {loading && (
+  <div className="fixed inset-0 bg-black flex items-center justify-center">
+    <div className="text-center">
+      <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
+      <p className="text-xl font-semibold">
+        Generating your AI Presenter...
+      </p>
+      <p className="text-neutral-400 mt-2">
+        This may take a few seconds.
+      </p>
+    </div>
+  </div>
+)}
+
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
       
       <div className="max-w-3xl w-full">
@@ -71,8 +90,13 @@ export default function Create() {
         </div>
 
         {/* CTA */}
-        <button className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition">
-          Generate Presenter
+        <<button
+  onClick={() => setLoading(true)}
+  className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition"
+>
+  Generate Presenter
+</button>
+
         </button>
 
       </div>
