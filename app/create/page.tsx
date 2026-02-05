@@ -15,7 +15,7 @@ export default function Create() {
     "Finalizing your AI presenter..."
   ];
 
-  // SMART TIMELINE LOADER (senior-level approach)
+  // SMART TIMELINE (no bugs, no loops)
   useEffect(() => {
     if (!loading) return;
 
@@ -54,27 +54,41 @@ export default function Create() {
         </div>
       )}
 
-      {/* RESULT SCREEN */}
+      {/* RESULT — ULTRA REALISTIC AI PRESENTER */}
       {completed && (
         <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
-          <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md shadow-2xl border border-neutral-800">
+          
+          <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-sm border border-neutral-800">
             
-            <h2 className="text-2xl font-bold mb-3">
-              ✅ Your AI Presenter is Ready
-            </h2>
+            <img
+              src="https://images.unsplash.com/photo-1580489944761-15a19d654956"
+              className="w-full h-80 object-cover"
+            />
 
-            <p className="text-neutral-400 mb-6">
-              Your digital identity has been successfully created.
-            </p>
+            <div className="p-6 text-center">
+              
+              <h2 className="text-2xl font-bold">
+                Sophia Carter
+              </h2>
 
-            <button
-              onClick={() => setCompleted(false)}
-              className="px-6 py-3 bg-white text-black rounded-xl font-semibold hover:scale-105 transition"
-            >
-              Continue
-            </button>
+              <p className="text-neutral-400 mb-4">
+                Senior Business Presenter
+              </p>
 
+              <p className="text-sm text-neutral-500 mb-6">
+                Confident communicator specialized in delivering clear, persuasive presentations for modern brands.
+              </p>
+
+              <button
+                onClick={() => setCompleted(false)}
+                className="w-full py-3 bg-white text-black rounded-xl font-semibold hover:scale-105 transition"
+              >
+                Enter Studio
+              </button>
+
+            </div>
           </div>
+
         </div>
       )}
 
