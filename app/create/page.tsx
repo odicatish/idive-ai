@@ -7,6 +7,7 @@ export default function Create() {
   const [completed, setCompleted] = useState(false);
   const [studio, setStudio] = useState(false);
   const [showVideo, setShowVideo] = useState(false);
+  const [showPaywall, setShowPaywall] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
@@ -131,7 +132,7 @@ export default function Create() {
           {/* RIGHT */}
           <div className="w-1/2 flex flex-col justify-center px-20 gap-6">
 
-            {/* ⭐ HERO BUTTON */}
+            {/* DEMO */}
             <button
               onClick={() => setShowVideo(true)}
               className="w-full py-5 bg-indigo-600 rounded-2xl text-lg font-semibold hover:bg-indigo-500 transition"
@@ -139,15 +140,25 @@ export default function Create() {
               ▶ Watch AI Demo
             </button>
 
-            <button className="w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-[1.02] transition">
+            {/* LOCKED BUTTONS */}
+            <button
+              onClick={() => setShowPaywall(true)}
+              className="w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-[1.02] transition"
+            >
               🎬 Create Video
             </button>
 
-            <button className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition">
+            <button
+              onClick={() => setShowPaywall(true)}
+              className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition"
+            >
               🎤 Clone Voice
             </button>
 
-            <button className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition">
+            <button
+              onClick={() => setShowPaywall(true)}
+              className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition"
+            >
               ✍️ Generate Script
             </button>
 
@@ -184,7 +195,48 @@ export default function Create() {
         </div>
       )}
 
-      {/* CREATE SCREEN */}
+      {/* 🔒 PAYWALL */}
+      {showPaywall && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+          
+          <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md shadow-2xl border border-neutral-800">
+            
+            <h2 className="text-2xl font-bold mb-3">
+              Unlock AI Video Generation
+            </h2>
+
+            <p className="text-neutral-400 mb-8">
+              Create studio-quality presenter videos without cameras, actors, or production teams.
+            </p>
+
+            <div className="mb-8">
+              <span className="text-5xl font-bold">
+                $29
+              </span>
+              <span className="text-neutral-400 ml-2">
+                /month
+              </span>
+            </div>
+
+            <button
+              className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-105 transition mb-3"
+            >
+              Unlock Access
+            </button>
+
+            <button
+              onClick={() => setShowPaywall(false)}
+              className="text-neutral-500 hover:text-neutral-300"
+            >
+              Maybe later
+            </button>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* CREATE */}
       {!studio && !loading && !completed && (
         <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
           <div className="max-w-3xl w-full">
