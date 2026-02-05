@@ -6,6 +6,7 @@ export default function Create() {
   const [loading, setLoading] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [studio, setStudio] = useState(false);
+  const [showVideo, setShowVideo] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
@@ -115,7 +116,7 @@ export default function Create() {
               Senior Business Presenter
             </p>
 
-            <div className="flex gap-3">
+            <div className="flex gap-3 mb-10">
               <span className="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm">
                 ● Online
               </span>
@@ -130,6 +131,14 @@ export default function Create() {
           {/* RIGHT */}
           <div className="w-1/2 flex flex-col justify-center px-20 gap-6">
 
+            {/* ⭐ HERO BUTTON */}
+            <button
+              onClick={() => setShowVideo(true)}
+              className="w-full py-5 bg-indigo-600 rounded-2xl text-lg font-semibold hover:bg-indigo-500 transition"
+            >
+              ▶ Watch AI Demo
+            </button>
+
             <button className="w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-[1.02] transition">
               🎬 Create Video
             </button>
@@ -141,6 +150,34 @@ export default function Create() {
             <button className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition">
               ✍️ Generate Script
             </button>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* 🎥 VIDEO POPUP */}
+      {showVideo && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+          
+          <div className="relative w-[900px] max-w-[95%]">
+
+            <button
+              onClick={() => setShowVideo(false)}
+              className="absolute -top-12 right-0 text-white text-3xl"
+            >
+              ✕
+            </button>
+
+            <div className="rounded-2xl overflow-hidden shadow-2xl">
+              <iframe
+                width="100%"
+                height="500"
+                src="https://www.youtube.com/embed/W6NZfCO5SIk"
+                title="AI Demo"
+                allowFullScreen
+              />
+            </div>
 
           </div>
 
