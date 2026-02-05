@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 export default function Create() {
 
   const [loading, setLoading] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
@@ -14,32 +15,65 @@ export default function Create() {
     "Finalizing your AI presenter..."
   ];
 
+  // SMART TIMELINE LOADER (senior-level approach)
   useEffect(() => {
     if (!loading) return;
 
-    const interval = setInterval(() => {
-      setStepIndex((prev) => {
-        if (prev === steps.length - 1) {
-          clearInterval(interval);
-          return prev;
-        }
-        return prev + 1;
-      });
-    }, 1200);
+    setStepIndex(0);
 
-    return () => clearInterval(interval);
-  }, [loading, steps.length]);
+    const timeouts = steps.map((_, i) =>
+      setTimeout(() => {
+        setStepIndex(i);
+      }, i * 1200)
+    );
+
+    const finishTimeout = setTimeout(() => {
+      setLoading(false);
+      setCompleted(true);
+    }, steps.length * 1200 + 500);
+
+    return () => {
+      timeouts.forEach(clearTimeout);
+      clearTimeout(finishTimeout);
+    };
+
+  }, [loading]);
 
   return (
     <>
+      {/* LOADER */}
       {loading && (
         <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
           <div className="text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
 
-            <p className="text-xl font-semibold">
+            <p className="text-xl font-semibold animate-pulse">
               {steps[stepIndex]}
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* RESULT SCREEN */}
+      {completed && (
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
+          <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md shadow-2xl border border-neutral-800">
+            
+            <h2 className="text-2xl font-bold mb-3">
+              ✅ Your AI Presenter is Ready
+            </h2>
+
+            <p className="text-neutral-400 mb-6">
+              Your digital identity has been successfully created.
+            </p>
+
+            <button
+              onClick={() => setCompleted(false)}
+              className="px-6 py-3 bg-white text-black rounded-xl font-semibold hover:scale-105 transition"
+            >
+              Continue
+            </button>
+
           </div>
         </div>
       )}
@@ -62,20 +96,9 @@ export default function Create() {
             </h2>
 
             <div className="grid grid-cols-3 gap-4">
-              <img
-                src="https://images.unsplash.com/photo-1607746882042-944635dfe10e"
-                className="rounded-xl cursor-pointer hover:scale-105 transition"
-              />
-
-              <img
-                src="https://images.unsplash.com/photo-1544005313-94ddf0286df2"
-                className="rounded-xl cursor-pointer hover:scale-105 transition"
-              />
-
-              <img
-                src="https://images.unsplash.com/photo-1552058544-f2b08422138a"
-                className="rounded-xl cursor-pointer hover:scale-105 transition"
-              />
+              <img src="https://images.unsplash.com/photo-1607746882042-944635dfe10e" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
+              <img src="https://images.unsplash.com/photo-1544005313-94ddf0286df2" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
+              <img src="https://images.unsplash.com/photo-1552058544-f2b08422138a" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
             </div>
           </div>
 
@@ -86,17 +109,9 @@ export default function Create() {
             </h2>
 
             <div className="flex gap-4">
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">
-                Professional
-              </button>
-
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">
-                Energetic
-              </button>
-
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">
-                Calm
-              </button>
+              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Professional</button>
+              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Energetic</button>
+              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Calm</button>
             </div>
           </div>
 
@@ -112,10 +127,9 @@ export default function Create() {
             />
           </div>
 
-          {/* CTA */}
           <button
             onClick={() => {
-              setStepIndex(0);
+              setCompleted(false);
               setLoading(true);
             }}
             className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition"
