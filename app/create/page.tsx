@@ -24,15 +24,13 @@ export default function Create() {
     setStepIndex(0);
 
     const timeouts = steps.map((_, i) =>
-      setTimeout(() => {
-        setStepIndex(i);
-      }, i * 1200)
+      setTimeout(() => setStepIndex(i), i * 1200)
     );
 
     const finishTimeout = setTimeout(() => {
       setLoading(false);
       setCompleted(true);
-    }, steps.length * 1200 + 500);
+    }, steps.length * 1200 + 400);
 
     return () => {
       timeouts.forEach(clearTimeout);
@@ -45,7 +43,7 @@ export default function Create() {
     <>
       {/* LOADER */}
       {loading && (
-        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
           <div className="text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
 
@@ -58,7 +56,7 @@ export default function Create() {
 
       {/* RESULT */}
       {completed && (
-        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
           
           <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-sm border border-neutral-800">
             
@@ -134,7 +132,10 @@ export default function Create() {
 
             {/* DEMO */}
             <button
-              onClick={() => setShowVideo(true)}
+              onClick={() => {
+                setShowPaywall(false);
+                setShowVideo(true);
+              }}
               className="w-full py-5 bg-indigo-600 rounded-2xl text-lg font-semibold hover:bg-indigo-500 transition"
             >
               ▶ Watch AI Demo
@@ -142,21 +143,30 @@ export default function Create() {
 
             {/* LOCKED BUTTONS */}
             <button
-              onClick={() => setShowPaywall(true)}
+              onClick={() => {
+                setShowVideo(false);
+                setShowPaywall(true);
+              }}
               className="w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-[1.02] transition"
             >
               🎬 Create Video
             </button>
 
             <button
-              onClick={() => setShowPaywall(true)}
+              onClick={() => {
+                setShowVideo(false);
+                setShowPaywall(true);
+              }}
               className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition"
             >
               🎤 Clone Voice
             </button>
 
             <button
-              onClick={() => setShowPaywall(true)}
+              onClick={() => {
+                setShowVideo(false);
+                setShowPaywall(true);
+              }}
               className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition"
             >
               ✍️ Generate Script
@@ -169,7 +179,7 @@ export default function Create() {
 
       {/* 🎥 VIDEO POPUP */}
       {showVideo && (
-        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-40">
           
           <div className="relative w-[900px] max-w-[95%]">
 
@@ -195,9 +205,9 @@ export default function Create() {
         </div>
       )}
 
-      {/* 🔒 PAYWALL */}
+      {/* 🔒 PAYWALL — ALWAYS ON TOP */}
       {showPaywall && (
-        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/95 flex items-center justify-center z-50">
           
           <div className="bg-neutral-900 p-10 rounded-3xl text-center max-w-md shadow-2xl border border-neutral-800">
             
@@ -209,13 +219,14 @@ export default function Create() {
               Create studio-quality presenter videos without cameras, actors, or production teams.
             </p>
 
+            {/* BIG PRICE */}
             <div className="mb-8">
-              <span className="text-5xl font-bold">
+              <span className="text-6xl font-bold">
                 $29
               </span>
-              <span className="text-neutral-400 ml-2">
-                /month
-              </span>
+              <div className="text-neutral-400">
+                per month
+              </div>
             </div>
 
             <button
