@@ -1,5 +1,30 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+const steps = [
+  "Analyzing your request...",
+  "Designing presenter appearance...",
+  "Generating natural voice...",
+  "Building personality...",
+  "Finalizing your AI presenter..."
+];
+
+const [stepIndex, setStepIndex] = useState(0);
+useEffect(() => {
+  if (!loading) return;
+
+  const interval = setInterval(() => {
+    setStepIndex((prev) => {
+      if (prev === steps.length - 1) {
+        clearInterval(interval);
+        return prev;
+      }
+      return prev + 1;
+    });
+  }, 1200);
+
+  return () => clearInterval(interval);
+}, [loading]);
+
 
 export default function Create() {
   const [loading, setLoading] = useState(false);
@@ -11,10 +36,11 @@ export default function Create() {
           <div className="text-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-6"></div>
             <p className="text-xl font-semibold">
-              Generating your AI Presenter...
+             {steps[stepIndex]}
+
             </p>
             <p className="text-neutral-400 mt-2">
-              This may take a few seconds.
+             
             </p>
           </div>
         </div>
