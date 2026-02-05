@@ -19,10 +19,22 @@ export default function Create() {
           </h2>
 
           <div className="grid grid-cols-3 gap-4">
-            <div className="bg-neutral-900 h-32 rounded-xl hover:bg-neutral-800 cursor-pointer"></div>
-            <div className="bg-neutral-900 h-32 rounded-xl hover:bg-neutral-800 cursor-pointer"></div>
-            <div className="bg-neutral-900 h-32 rounded-xl hover:bg-neutral-800 cursor-pointer"></div>
-          </div>
+  <img
+    src="https://images.unsplash.com/photo-1607746882042-944635dfe10e"
+    className="rounded-xl cursor-pointer hover:scale-105 transition"
+  />
+
+  <img
+    src="https://images.unsplash.com/photo-1544005313-94ddf0286df2"
+    className="rounded-xl cursor-pointer hover:scale-105 transition"
+  />
+
+  <img
+    src="https://images.unsplash.com/photo-1552058544-f2b08422138a"
+    className="rounded-xl cursor-pointer hover:scale-105 transition"
+  />
+</div>
+
         </div>
 
         {/* STEP 2 */}
