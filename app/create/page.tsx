@@ -5,6 +5,7 @@ export default function Create() {
 
   const [loading, setLoading] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [studio, setStudio] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
@@ -15,7 +16,6 @@ export default function Create() {
     "Finalizing your AI presenter..."
   ];
 
-  // SMART TIMELINE (no bugs, no loops)
   useEffect(() => {
     if (!loading) return;
 
@@ -54,7 +54,7 @@ export default function Create() {
         </div>
       )}
 
-      {/* RESULT — ULTRA REALISTIC AI PRESENTER */}
+      {/* RESULT */}
       {completed && (
         <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
           
@@ -80,7 +80,10 @@ export default function Create() {
               </p>
 
               <button
-                onClick={() => setCompleted(false)}
+                onClick={() => {
+                  setCompleted(false);
+                  setStudio(true);
+                }}
                 className="w-full py-3 bg-white text-black rounded-xl font-semibold hover:scale-105 transition"
               >
                 Enter Studio
@@ -92,67 +95,85 @@ export default function Create() {
         </div>
       )}
 
-      <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
-        <div className="max-w-3xl w-full">
+      {/* 🎬 STUDIO */}
+      {studio && (
+        <div className="min-h-screen bg-black text-white flex">
 
-          <h1 className="text-5xl font-bold mb-6">
-            Create Your AI Presenter
-          </h1>
-
-          <p className="text-neutral-400 mb-12">
-            Follow the steps below to generate a professional digital identity in seconds.
-          </p>
-
-          {/* STEP 1 */}
-          <div className="mb-10">
-            <h2 className="text-xl font-semibold mb-3">
-              Step 1 — Choose appearance
-            </h2>
-
-            <div className="grid grid-cols-3 gap-4">
-              <img src="https://images.unsplash.com/photo-1607746882042-944635dfe10e" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
-              <img src="https://images.unsplash.com/photo-1544005313-94ddf0286df2" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
-              <img src="https://images.unsplash.com/photo-1552058544-f2b08422138a" className="rounded-xl hover:scale-105 transition cursor-pointer"/>
-            </div>
-          </div>
-
-          {/* STEP 2 */}
-          <div className="mb-10">
-            <h2 className="text-xl font-semibold mb-3">
-              Step 2 — Pick a voice
-            </h2>
-
-            <div className="flex gap-4">
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Professional</button>
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Energetic</button>
-              <button className="px-4 py-2 bg-neutral-900 rounded-xl hover:bg-neutral-800">Calm</button>
-            </div>
-          </div>
-
-          {/* STEP 3 */}
-          <div className="mb-12">
-            <h2 className="text-xl font-semibold mb-3">
-              Step 3 — What will your presenter talk about?
-            </h2>
-
-            <textarea
-              className="w-full h-28 bg-neutral-900 rounded-xl p-4 outline-none focus:ring-2 focus:ring-white"
-              placeholder="Example: A fitness expert helping busy professionals stay in shape..."
+          {/* LEFT */}
+          <div className="w-1/2 flex flex-col items-center justify-center border-r border-neutral-800">
+            
+            <img
+              src="https://images.unsplash.com/photo-1580489944761-15a19d654956"
+              className="h-[420px] w-[320px] object-cover rounded-3xl shadow-2xl mb-6"
             />
+
+            <h2 className="text-3xl font-bold">
+              Sophia Carter
+            </h2>
+
+            <p className="text-neutral-400 mb-3">
+              Senior Business Presenter
+            </p>
+
+            <div className="flex gap-3">
+              <span className="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm">
+                ● Online
+              </span>
+
+              <span className="px-3 py-1 bg-indigo-500/20 text-indigo-400 rounded-full text-sm">
+                AI Ready
+              </span>
+            </div>
+
           </div>
 
-          <button
-            onClick={() => {
-              setCompleted(false);
-              setLoading(true);
-            }}
-            className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition"
-          >
-            Generate Presenter
-          </button>
+          {/* RIGHT */}
+          <div className="w-1/2 flex flex-col justify-center px-20 gap-6">
+
+            <button className="w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-[1.02] transition">
+              🎬 Create Video
+            </button>
+
+            <button className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition">
+              🎤 Clone Voice
+            </button>
+
+            <button className="w-full py-5 bg-neutral-900 rounded-2xl text-lg font-semibold hover:bg-neutral-800 transition">
+              ✍️ Generate Script
+            </button>
+
+          </div>
 
         </div>
-      </main>
+      )}
+
+      {/* CREATE SCREEN */}
+      {!studio && !loading && !completed && (
+        <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
+          <div className="max-w-3xl w-full">
+
+            <h1 className="text-5xl font-bold mb-6">
+              Create Your AI Presenter
+            </h1>
+
+            <p className="text-neutral-400 mb-12">
+              Follow the steps below to generate a professional digital identity in seconds.
+            </p>
+
+            <button
+              onClick={() => {
+                setCompleted(false);
+                setLoading(true);
+              }}
+              className="w-full py-4 bg-white text-black rounded-2xl font-semibold text-lg hover:scale-[1.02] transition"
+            >
+              Generate Presenter
+            </button>
+
+          </div>
+        </main>
+      )}
+
     </>
   );
 }
