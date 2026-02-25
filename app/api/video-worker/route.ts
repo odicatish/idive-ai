@@ -4,13 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic"; // recommended for cron endpoints
 
 function jsonError(status: number, error: string, details?: any) {
   return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
 function timingSafeEqual(a: string, b: string) {
+  // avoid throw on different lengths
   const aa = Buffer.from(a);
   const bb = Buffer.from(b);
   if (aa.length !== bb.length) return false;
@@ -18,20 +18,22 @@ function timingSafeEqual(a: string, b: string) {
 }
 
 function getSecret(req: Request) {
-  // 1) Authorization: Bearer xxx (Vercel cron sends this if CRON_SECRET is set)
+  // 1) Authorization: Bearer xxx
   const auth = req.headers.get("authorization") || "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  const bearer = m?.[1]?.trim();
+  const bearer = (m?.[1] || "").trim();
 
-  // 2) x-video-worker-secret: xxx (optional)
+  // 2) x-video-worker-secret: xxx
   const headerAlt = (req.headers.get("x-video-worker-secret") || "").trim();
 
-  // 3) ?secret=xxx (manual testing)
+  // 3) ?secret=xxx
   let qp = "";
   try {
     const url = new URL(req.url);
     qp = (url.searchParams.get("secret") || "").trim();
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   return bearer || headerAlt || qp || "";
 }
@@ -48,31 +50,13 @@ function supabaseAdmin() {
   });
 }
 
-function isAuthorized(req: Request) {
-  const secret = getSecret(req);
-
-  // Preferred on Vercel Cron Jobs:
-  // If you set CRON_SECRET in Vercel env vars, Vercel sends:
-  // Authorization: Bearer <CRON_SECRET>
-  const cronExpected = (process.env.CRON_SECRET || "").trim();
-
-  // Backwards compatible:
-  const workerExpected = (process.env.VIDEO_WORKER_SECRET || "dev_secret_123").trim();
-
-  if (!secret) return false;
-
-  if (cronExpected && timingSafeEqual(secret, cronExpected)) return true;
-  if (workerExpected && timingSafeEqual(secret, workerExpected)) return true;
-
-  return false;
-}
-
 async function handle(req: Request) {
-  // 1) auth
-  if (!isAuthorized(req)) {
-    return jsonError(401, "unauthorized_worker", {
-      hint: "Set CRON_SECRET on Vercel (recommended) or provide ?secret=... for manual testing.",
-    });
+  // 1) worker secret
+  const secret = getSecret(req);
+  const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
+
+  if (!secret || !timingSafeEqual(secret, expected)) {
+    return jsonError(401, "unauthorized_worker");
   }
 
   // 2) admin client
@@ -150,8 +134,21 @@ async function handle(req: Request) {
   });
 }
 
-// Vercel Cron calls GET
 export async function GET(req: Request) {
+  // Vercel Cron hits GET. We support GET for cron.
+  const secret = getSecret(req);
+  if (!secret) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "missing_secret",
+        message:
+          "Call with ?secret=... or Authorization: Bearer ... (Cron uses GET by default).",
+      },
+      { status: 400 }
+    );
+  }
+
   try {
     return await handle(req);
   } catch (e: any) {
@@ -160,7 +157,6 @@ export async function GET(req: Request) {
   }
 }
 
-// manual / other callers can still POST
 export async function POST(req: Request) {
   try {
     return await handle(req);
