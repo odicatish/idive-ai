@@ -4,13 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic"; // recommended for cron endpoints
 
 function jsonError(status: number, error: string, details?: any) {
   return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
-function timingSafeEqualStr(a: string, b: string) {
-  // avoid throwing on different lengths
+function timingSafeEqual(a: string, b: string) {
   const aa = Buffer.from(a);
   const bb = Buffer.from(b);
   if (aa.length !== bb.length) return false;
@@ -18,22 +18,20 @@ function timingSafeEqualStr(a: string, b: string) {
 }
 
 function getSecret(req: Request) {
-  // 1) Authorization: Bearer xxx
+  // 1) Authorization: Bearer xxx (Vercel cron sends this if CRON_SECRET is set)
   const auth = req.headers.get("authorization") || "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  const bearer = (m?.[1] || "").trim();
+  const bearer = m?.[1]?.trim();
 
-  // 2) x-video-worker-secret: xxx
+  // 2) x-video-worker-secret: xxx (optional)
   const headerAlt = (req.headers.get("x-video-worker-secret") || "").trim();
 
-  // 3) ?secret=xxx
+  // 3) ?secret=xxx (manual testing)
   let qp = "";
   try {
     const url = new URL(req.url);
     qp = (url.searchParams.get("secret") || "").trim();
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return bearer || headerAlt || qp || "";
 }
@@ -50,20 +48,38 @@ function supabaseAdmin() {
   });
 }
 
-async function handle(req: Request) {
-  // 1) worker secret
+function isAuthorized(req: Request) {
   const secret = getSecret(req);
-  const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
 
-  if (!secret || !timingSafeEqualStr(secret, expected)) {
-    return jsonError(401, "unauthorized_worker");
+  // Preferred on Vercel Cron Jobs:
+  // If you set CRON_SECRET in Vercel env vars, Vercel sends:
+  // Authorization: Bearer <CRON_SECRET>
+  const cronExpected = (process.env.CRON_SECRET || "").trim();
+
+  // Backwards compatible:
+  const workerExpected = (process.env.VIDEO_WORKER_SECRET || "dev_secret_123").trim();
+
+  if (!secret) return false;
+
+  if (cronExpected && timingSafeEqual(secret, cronExpected)) return true;
+  if (workerExpected && timingSafeEqual(secret, workerExpected)) return true;
+
+  return false;
+}
+
+async function handle(req: Request) {
+  // 1) auth
+  if (!isAuthorized(req)) {
+    return jsonError(401, "unauthorized_worker", {
+      hint: "Set CRON_SECRET on Vercel (recommended) or provide ?secret=... for manual testing.",
+    });
   }
 
   // 2) admin client
   const supabase = supabaseAdmin();
 
-  // 3) pick 1 queued job (oldest)
-  const { data: picked, error: pickErr } = await supabase
+  // 3) pick 1 queued job
+  const { data: job, error: pickErr } = await supabase
     .from("presenter_video_jobs")
     .select("*")
     .eq("status", "queued")
@@ -73,12 +89,12 @@ async function handle(req: Request) {
 
   if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
 
-  if (!picked) {
+  if (!job) {
     return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
   }
 
-  // 4) lock job safely (only if still queued)
-  const { data: locked, error: lockErr } = await supabase
+  // 4) move to processing
+  const { error: lockErr } = await supabase
     .from("presenter_video_jobs")
     .update({
       status: "processing",
@@ -86,40 +102,32 @@ async function handle(req: Request) {
       error: null,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", picked.id)
-    .eq("status", "queued")
-    .select("*")
-    .maybeSingle();
+    .eq("id", job.id);
 
   if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
-
-  // If nothing was updated, another worker grabbed it
-  if (!locked) {
-    return NextResponse.json({ ok: true, didWork: false, message: "Job was already picked by another worker." });
-  }
 
   // 5) simulate render pipeline (mock)
   await new Promise((r) => setTimeout(r, 600));
   await supabase
     .from("presenter_video_jobs")
     .update({ progress: 25, updated_at: new Date().toISOString() })
-    .eq("id", locked.id);
+    .eq("id", job.id);
 
   await new Promise((r) => setTimeout(r, 600));
   await supabase
     .from("presenter_video_jobs")
     .update({ progress: 55, updated_at: new Date().toISOString() })
-    .eq("id", locked.id);
+    .eq("id", job.id);
 
   await new Promise((r) => setTimeout(r, 600));
   await supabase
     .from("presenter_video_jobs")
     .update({ progress: 85, updated_at: new Date().toISOString() })
-    .eq("id", locked.id);
+    .eq("id", job.id);
 
   await new Promise((r) => setTimeout(r, 600));
 
-  const fakeUrl = `https://example.com/videos/${locked.presenter_id}/${locked.id}.mp4`;
+  const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
 
   const { error: doneErr } = await supabase
     .from("presenter_video_jobs")
@@ -128,21 +136,21 @@ async function handle(req: Request) {
       progress: 100,
       video_url: fakeUrl,
       provider: "mock",
-      provider_job_id: String(locked.id),
+      provider_job_id: String(job.id),
       updated_at: new Date().toISOString(),
     })
-    .eq("id", locked.id);
+    .eq("id", job.id);
 
   if (doneErr) return jsonError(500, "job_complete_failed", doneErr.message);
 
   return NextResponse.json({
     ok: true,
     didWork: true,
-    job: { id: locked.id, status: "completed", progress: 100, videoUrl: fakeUrl },
+    job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
   });
 }
 
-// ✅ Vercel Cron calls GET → we support it
+// Vercel Cron calls GET
 export async function GET(req: Request) {
   try {
     return await handle(req);
@@ -152,7 +160,7 @@ export async function GET(req: Request) {
   }
 }
 
-// ✅ manual / other callers can still POST
+// manual / other callers can still POST
 export async function POST(req: Request) {
   try {
     return await handle(req);
