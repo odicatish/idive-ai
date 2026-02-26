@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/video-worker",
+      "path": "/api/video-worker?secret=$VIDEO_WORKER_SECRET",
       "schedule": "*/1 * * * *"
     }
   ]
