@@ -1,3 +1,4 @@
+// app/api/video-jobs/[id]/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
@@ -35,9 +36,9 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
 
     const { data: job, error } = await supabase
       .from("presenter_video_jobs")
-      .select("id,status,progress,error,video_url,updated_at,created_at")
+      .select("id,status,progress,error,video_url,updated_at,created_at,presenter_id,script_id,script_version")
       .eq("id", id)
-      .eq("user_id", auth.user.id)
+      .eq("created_by", auth.user.id) // ✅ IMPORTANT: created_by, nu user_id
       .maybeSingle();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });

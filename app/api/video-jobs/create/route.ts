@@ -1,3 +1,4 @@
+// app/api/video-jobs/create/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
@@ -32,42 +33,38 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const presenterId = String(body.presenterId || "").trim();
 
-    if (!presenterId) {
-      return NextResponse.json({ error: "Missing presenterId" }, { status: 400 });
+    const presenterId = (body?.presenterId ?? body?.presenter_id ?? "").toString().trim();
+    const scriptId = (body?.scriptId ?? body?.script_id ?? "").toString().trim();
+    const scriptVersionRaw = body?.scriptVersion ?? body?.script_version ?? 1;
+    const scriptVersion = Number(scriptVersionRaw);
+
+    if (!presenterId) return NextResponse.json({ error: "Missing presenterId" }, { status: 400 });
+    if (!scriptId) return NextResponse.json({ error: "Missing scriptId" }, { status: 400 });
+    if (!Number.isFinite(scriptVersion) || scriptVersion < 1) {
+      return NextResponse.json({ error: "Invalid scriptVersion" }, { status: 400 });
     }
+
+    const now = new Date().toISOString();
 
     const { data: job, error } = await supabase
       .from("presenter_video_jobs")
       .insert({
-        user_id: auth.user.id,
         presenter_id: presenterId,
+        script_id: scriptId,
+        script_version: scriptVersion,
+        created_by: auth.user.id,
         status: "queued",
         progress: 0,
         error: null,
-        video_url: null,
-        provider: null,
-        provider_job_id: null,
+        created_at: now,
+        updated_at: now,
       })
-      .select("id,status,progress")
+      .select("id,status,progress,created_at,updated_at")
       .single();
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    // 🔥 Trigger worker imediat (ca să nu aștepți cron-ul daily)
-    // IMPORTANT: pune VIDEO_WORKER_SECRET în Vercel env.
-    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://idive-ai.vercel.app").replace(/\/$/, "");
-    const workerSecret = process.env.VIDEO_WORKER_SECRET;
-
-    if (workerSecret) {
-      // fire-and-forget
-      fetch(`${appUrl}/api/video-worker?secret=${encodeURIComponent(workerSecret)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }).catch(() => {});
     }
 
     return NextResponse.json({ ok: true, job }, { status: 200 });
