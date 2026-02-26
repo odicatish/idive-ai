@@ -7,28 +7,27 @@ import { createServerClient } from "@supabase/ssr";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function getEnv(name: string) {
+  const v = process.env[name];
+  return typeof v === "string" ? v.trim() : "";
+}
+
 export async function POST() {
-  // IMPORTANT: nu inițializa Stripe la top-level (crapă la build pe Vercel)
-  const secret = process.env.STRIPE_SECRET_KEY;
-  if (!secret) {
-    return NextResponse.json(
-      { error: "Missing STRIPE_SECRET_KEY" },
-      { status: 500 }
-    );
-  }
-  const stripe = new Stripe(secret);
+  const stripeSecretKey = getEnv("STRIPE_SECRET_KEY");
+  const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const supabaseAnon = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  const priceId = getEnv("STRIPE_PRICE_ID");
 
+  if (!stripeSecretKey) return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
+  if (!supabaseUrl) return NextResponse.json({ error: "Missing NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
+  if (!supabaseAnon) return NextResponse.json({ error: "Missing NEXT_PUBLIC_SUPABASE_ANON_KEY" }, { status: 500 });
+  if (!priceId) return NextResponse.json({ error: "Missing STRIPE_PRICE_ID" }, { status: 500 });
+
+  // ✅ NU setăm apiVersion ca să nu mai dea TS mismatch
+  const stripe = new Stripe(stripeSecretKey);
+
+  // ✅ cookies() poate fi Promise -> await
   const cookieStore = await cookies();
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnon) {
-    return NextResponse.json(
-      { error: "Missing Supabase env vars" },
-      { status: 500 }
-    );
-  }
 
   const supabase = createServerClient(supabaseUrl, supabaseAnon, {
     cookies: {
@@ -45,18 +44,7 @@ export async function POST() {
     return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
   }
 
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(
-    /\/$/,
-    ""
-  );
-
-  const priceId = process.env.STRIPE_PRICE_ID;
-  if (!priceId) {
-    return NextResponse.json(
-      { error: "Missing STRIPE_PRICE_ID" },
-      { status: 500 }
-    );
-  }
+  const appUrl = (getEnv("NEXT_PUBLIC_APP_URL") || "http://localhost:3000").replace(/\/$/, "");
 
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",

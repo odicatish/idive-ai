@@ -1,3 +1,4 @@
+// app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
@@ -6,46 +7,54 @@ import { createClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!, // sau SUPABASE_URL dacă îl ai
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-async function upsertSubscription(params: {
+type UpsertParams = {
   userId: string;
   customerId: string | null;
   subscription: Stripe.Subscription;
-}) {
-  const { userId, customerId, subscription } = params;
+};
 
-  const priceId = subscription.items.data[0]?.price?.id ?? null;
-  const periodEnd = (subscription as any).current_period_end as number | undefined;
-
-  const currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000).toISOString() : null;
-
-  const { error } = await supabaseAdmin
-    .from("subscriptions")
-    .upsert(
-      {
-        user_id: userId,
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscription.id,
-        status: subscription.status,
-        current_period_end: currentPeriodEnd,
-        price_id: priceId,
-      },
-      { onConflict: "stripe_subscription_id" }
-    );
-
-  if (error) throw error;
+function getEnv(name: string) {
+  const v = process.env[name];
+  return typeof v === "string" ? v.trim() : "";
 }
 
 export async function POST(req: Request) {
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
-  if (!webhookSecret) {
-    return NextResponse.json({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+  const stripeSecretKey = getEnv("STRIPE_SECRET_KEY");
+  const webhookSecret = getEnv("STRIPE_WEBHOOK_SECRET");
+
+  const supabaseUrl = getEnv("SUPABASE_URL") || getEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const supabaseServiceRole = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!stripeSecretKey) return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
+  if (!webhookSecret) return NextResponse.json({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+  if (!supabaseUrl) return NextResponse.json({ error: "Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL" }, { status: 500 });
+  if (!supabaseServiceRole) return NextResponse.json({ error: "Missing SUPABASE_SERVICE_ROLE_KEY" }, { status: 500 });
+
+  // ✅ NU setăm apiVersion ca să nu mai dea TS mismatch
+  const stripe = new Stripe(stripeSecretKey);
+
+  const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRole);
+
+  async function upsertSubscription({ userId, customerId, subscription }: UpsertParams) {
+    const priceId = subscription.items.data[0]?.price?.id ?? null;
+    const periodEnd = (subscription as any).current_period_end as number | undefined;
+    const currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000).toISOString() : null;
+
+    const { error } = await supabaseAdmin
+      .from("subscriptions")
+      .upsert(
+        {
+          user_id: userId,
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscription.id,
+          status: subscription.status,
+          current_period_end: currentPeriodEnd,
+          price_id: priceId,
+        },
+        { onConflict: "stripe_subscription_id" }
+      );
+
+    if (error) throw error;
   }
 
   const h = await headers();
@@ -59,7 +68,7 @@ export async function POST(req: Request) {
     event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
   } catch (err: any) {
     return NextResponse.json(
-      { error: `Webhook signature verification failed: ${err.message}` },
+      { error: `Webhook signature verification failed: ${err?.message ?? "unknown"}` },
       { status: 400 }
     );
   }
@@ -93,7 +102,6 @@ export async function POST(req: Request) {
         const sub = event.data.object as Stripe.Subscription;
         const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
 
-        // caută user_id din DB via customer id
         const { data, error } = await supabaseAdmin
           .from("subscriptions")
           .select("user_id")
@@ -104,9 +112,7 @@ export async function POST(req: Request) {
 
         if (error) throw error;
 
-        // fallback: dacă pui user_id în metadata pe subscription
         const metaUserId = (sub.metadata as any)?.user_id as string | undefined;
-
         const userId = data?.user_id ?? metaUserId;
         if (!userId) break;
 
