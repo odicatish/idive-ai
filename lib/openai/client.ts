@@ -1,20 +1,7 @@
-// app/lib/openai/client.ts
 import OpenAI from "openai";
 
-let _client: OpenAI | null = null;
+const apiKey = process.env.OPENAI_API_KEY;
 
-/**
- * Server-only OpenAI client.
- * Use this in API routes / server actions.
- */
-export function openaiServer() {
-  if (_client) return _client;
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing OPENAI_API_KEY in environment");
-  }
-
-  _client = new OpenAI({ apiKey });
-  return _client;
-}
+// exportăm ambele nume ca să nu mai crape importurile existente
+export const openaiServer = new OpenAI({ apiKey: apiKey! });
+export const openai = openaiServer;
