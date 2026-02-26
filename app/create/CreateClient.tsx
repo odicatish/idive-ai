@@ -40,6 +40,14 @@ export default function Create() {
   const [energy, setEnergy] = useState("executive");
   const [style, setStyle] = useState("authoritative");
 
+  // ✅ video job state
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [jobProgress, setJobProgress] = useState<number>(0);
+  const [jobVideoUrl, setJobVideoUrl] = useState<string | null>(null);
+  const [jobError, setJobError] = useState<string | null>(null);
+  const [jobPolling, setJobPolling] = useState(false);
+
   const steps = useMemo(
     () => [
       "Scanning neural identity space...",
@@ -154,10 +162,105 @@ export default function Create() {
     window.URL.revokeObjectURL(objUrl);
   };
 
+  // ✅ video jobs helpers
+  const startVideoJob = async () => {
+    if (!presenter?.id) {
+      alert("Missing presenter id.");
+      return;
+    }
+
+    setJobError(null);
+    setJobVideoUrl(null);
+    setJobStatus("queued");
+    setJobProgress(0);
+    setJobPolling(true);
+
+    try {
+      const data = await postJSON("/api/video-jobs/create", {
+        presenterId: presenter.id,
+      });
+      if (!data) return;
+
+      const id = data?.job?.id as string | undefined;
+      if (!id) throw new Error("Create job ok, but missing job.id");
+
+      setJobId(id);
+      setExportMsg("🎬 Video job created. Processing...");
+    } catch (e: any) {
+      console.error(e);
+      setJobPolling(false);
+      setJobError(e?.message ?? "Failed to create job");
+      setExportMsg(null);
+    }
+  };
+
+  const fetchJobStatus = async (id: string) => {
+    const res = await fetch(`/api/video-jobs/${id}`, { method: "GET" });
+
+    if (res.status === 401) {
+      redirectToLogin();
+      return null;
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`Status failed: ${res.status} ${txt}`);
+    }
+    return res.json();
+  };
+
+  // ✅ Poll job status
+  useEffect(() => {
+    if (!jobId || !jobPolling) return;
+
+    let alive = true;
+
+    const tick = async () => {
+      try {
+        const data = await fetchJobStatus(jobId);
+        if (!alive || !data) return;
+
+        const job = data?.job;
+        if (!job) return;
+
+        setJobStatus(job.status ?? null);
+        setJobProgress(Number(job.progress ?? 0));
+        setJobError(job.error ?? null);
+        setJobVideoUrl(job.video_url ?? null);
+
+        if (job.status === "completed" || job.status === "failed") {
+          setJobPolling(false);
+          setExportMsg(job.status === "completed" ? "✅ Video ready!" : "❌ Video failed.");
+          return;
+        }
+      } catch (e: any) {
+        console.error(e);
+        setJobPolling(false);
+        setJobError(e?.message ?? "Polling failed");
+        setExportMsg(null);
+      }
+    };
+
+    tick();
+    const i = setInterval(tick, 1500);
+
+    return () => {
+      alive = false;
+      clearInterval(i);
+    };
+  }, [jobId, jobPolling]);
+
   // generate human
   const generateHuman = async () => {
+    // reset export + job state for a fresh run
     setExportUrl(null);
     setExportMsg(null);
+
+    setJobId(null);
+    setJobStatus(null);
+    setJobProgress(0);
+    setJobVideoUrl(null);
+    setJobError(null);
+    setJobPolling(false);
 
     setPhase("loading");
     try {
@@ -332,6 +435,70 @@ export default function Create() {
             </button>
 
             <div className="h-px bg-neutral-800 my-6" />
+
+            {/* ✅ VIDEO WORKER BLOCK */}
+            <div className="text-left bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
+              <p className="text-xs uppercase tracking-wider text-neutral-400 mb-2">
+                Video Worker
+              </p>
+
+              {!jobId && (
+                <button
+                  onClick={startVideoJob}
+                  className="w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
+                >
+                  🎬 Generate Video
+                </button>
+              )}
+
+              {!!jobId && (
+                <div className="space-y-3">
+                  <div className="text-sm text-neutral-200">
+                    Status:{" "}
+                    <span className="text-white">{jobStatus ?? "unknown"}</span>
+                  </div>
+
+                  <div className="w-full h-2 bg-neutral-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-2 bg-white"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, jobProgress))}%`,
+                      }}
+                    />
+                  </div>
+
+                  <div className="text-xs text-neutral-400">
+                    Progress: {jobProgress}%{jobPolling ? " (updating...)" : ""}
+                  </div>
+
+                  {!!jobError && (
+                    <div className="text-xs text-red-300 bg-red-950/30 border border-red-900 rounded-xl p-3">
+                      {jobError}
+                    </div>
+                  )}
+
+                  {!!jobVideoUrl && (
+                    <a
+                      href={jobVideoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block w-full text-center py-3 bg-white text-black rounded-xl font-semibold hover:scale-[1.02] transition"
+                    >
+                      ▶️ Open Video
+                    </a>
+                  )}
+
+                  {!jobPolling && jobStatus !== "completed" && (
+                    <button
+                      onClick={() => setJobPolling(true)}
+                      className="w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
+                    >
+                      🔄 Resume Polling
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
 
             {!!exportMsg && (
               <div className="text-sm text-neutral-200 bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
