@@ -1,7 +1,9 @@
+// lib/openai/client.ts
 import OpenAI from "openai";
 
-const apiKey = process.env.OPENAI_API_KEY;
+export const openaiServer = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-// exportăm ambele nume ca să nu mai crape importurile existente
-export const openaiServer = new OpenAI({ apiKey: apiKey! });
+// compat: ca să nu mai crape importurile vechi
 export const openai = openaiServer;

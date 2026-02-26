@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
 export async function middleware(req: NextRequest) {
-  // Nu rula middleware pe rutele API
+  // NU rula middleware pe /api
   if (req.nextUrl.pathname.startsWith("/api")) {
     return NextResponse.next();
   }

@@ -1,11 +1,13 @@
+// app/api/video-worker/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-function json(status: number, body: any) {
-  return NextResponse.json(body, { status });
+function jsonError(status: number, error: string, details?: any) {
+  return NextResponse.json({ ok: false, error, ...(details ? { details } : {}) }, { status });
 }
 
 function timingSafeEqual(a: string, b: string) {
@@ -15,19 +17,20 @@ function timingSafeEqual(a: string, b: string) {
   return crypto.timingSafeEqual(aa, bb);
 }
 
-function getAuthBearer(req: Request) {
-  const h = req.headers.get("authorization") || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1]?.trim() || "";
-}
+function getSecret(req: Request) {
+  const auth = req.headers.get("authorization") || "";
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  const bearer = m?.[1]?.trim();
 
-function getQuerySecret(req: Request) {
+  const headerAlt = (req.headers.get("x-video-worker-secret") || "").trim();
+
+  let qp = "";
   try {
     const url = new URL(req.url);
-    return (url.searchParams.get("secret") || "").trim();
-  } catch {
-    return "";
-  }
+    qp = (url.searchParams.get("secret") || "").trim();
+  } catch {}
+
+  return bearer || headerAlt || qp || "";
 }
 
 function supabaseAdmin() {
@@ -42,36 +45,31 @@ function supabaseAdmin() {
   });
 }
 
-// GET = health-check (te ajută la test în browser)
 export async function GET(req: Request) {
-  return json(200, { ok: true, route: "video-worker", method: "GET" });
+  // ca să poți testa în browser și să vezi clar dacă ruta există
+  const secret = getSecret(req);
+  const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
+
+  return NextResponse.json({
+    ok: true,
+    route: "/api/video-worker",
+    hasSecret: !!secret,
+    secretMatches: !!secret && timingSafeEqual(secret, expected),
+    message: "Use POST to process jobs.",
+  });
 }
 
 export async function POST(req: Request) {
   try {
-    // 1) Auth
-    // - Cron: Authorization: Bearer <CRON_SECRET>
-    // - Manual test: ?secret=<VIDEO_WORKER_SECRET>
-    const bearer = getAuthBearer(req);
-    const qpSecret = getQuerySecret(req);
+    const secret = getSecret(req);
+    const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
 
-    const cronSecret = process.env.CRON_SECRET || "";
-    const workerSecret = process.env.VIDEO_WORKER_SECRET || "";
-
-    const authedByCron =
-      cronSecret && bearer && timingSafeEqual(bearer, cronSecret);
-
-    const authedByWorker =
-      workerSecret && qpSecret && timingSafeEqual(qpSecret, workerSecret);
-
-    if (!authedByCron && !authedByWorker) {
-      return json(401, { ok: false, error: "unauthorized_worker" });
+    if (!secret || !timingSafeEqual(secret, expected)) {
+      return jsonError(401, "unauthorized_worker");
     }
 
-    // 2) Supabase admin
     const supabase = supabaseAdmin();
 
-    // 3) Pick 1 queued job
     const { data: job, error: pickErr } = await supabase
       .from("presenter_video_jobs")
       .select("*")
@@ -80,13 +78,12 @@ export async function POST(req: Request) {
       .limit(1)
       .maybeSingle();
 
-    if (pickErr) return json(500, { ok: false, error: "job_pick_failed", details: pickErr.message });
+    if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
 
     if (!job) {
-      return json(200, { ok: true, didWork: false, message: "No queued jobs." });
+      return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
     }
 
-    // 4) Move to processing
     const { error: lockErr } = await supabase
       .from("presenter_video_jobs")
       .update({
@@ -97,9 +94,9 @@ export async function POST(req: Request) {
       })
       .eq("id", job.id);
 
-    if (lockErr) return json(500, { ok: false, error: "job_lock_failed", details: lockErr.message });
+    if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
 
-    // 5) Mock pipeline
+    // mock pipeline
     await new Promise((r) => setTimeout(r, 400));
     await supabase.from("presenter_video_jobs").update({ progress: 25, updated_at: new Date().toISOString() }).eq("id", job.id);
 
@@ -125,15 +122,15 @@ export async function POST(req: Request) {
       })
       .eq("id", job.id);
 
-    if (doneErr) return json(500, { ok: false, error: "job_complete_failed", details: doneErr.message });
+    if (doneErr) return jsonError(500, "job_complete_failed", doneErr.message);
 
-    return json(200, {
+    return NextResponse.json({
       ok: true,
       didWork: true,
       job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
     });
   } catch (e: any) {
     console.error("VIDEO_WORKER_ERROR", e);
-    return json(500, { ok: false, error: "internal_error", details: e?.message ?? String(e) });
+    return jsonError(500, "internal_error", e?.message ?? String(e));
   }
 }
