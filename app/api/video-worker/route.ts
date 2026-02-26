@@ -45,90 +45,110 @@ function supabaseAdmin() {
   });
 }
 
-export async function GET(req: Request) {
-  // ca să poți testa în browser și să vezi clar dacă ruta există
+async function runOnce(req: Request) {
   const secret = getSecret(req);
   const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
 
+  if (!secret || !timingSafeEqual(secret, expected)) {
+    return jsonError(401, "unauthorized_worker");
+  }
+
+  const supabase = supabaseAdmin();
+
+  // 1) pick oldest queued job
+  const { data: job, error: pickErr } = await supabase
+    .from("presenter_video_jobs")
+    .select("*")
+    .eq("status", "queued")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
+
+  if (!job) {
+    return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
+  }
+
+  // 2) lock it atomically-ish (only if still queued)
+  const { data: locked, error: lockErr } = await supabase
+    .from("presenter_video_jobs")
+    .update({
+      status: "processing",
+      progress: 5,
+      error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id)
+    .eq("status", "queued")
+    .select("id")
+    .maybeSingle();
+
+  if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
+
+  // If we failed to lock (someone else got it), exit cleanly
+  if (!locked) {
+    return NextResponse.json({ ok: true, didWork: false, message: "Job already taken." });
+  }
+
+  // 3) mock pipeline (replace with real provider)
+  await new Promise((r) => setTimeout(r, 400));
+  await supabase
+    .from("presenter_video_jobs")
+    .update({ progress: 25, updated_at: new Date().toISOString() })
+    .eq("id", job.id);
+
+  await new Promise((r) => setTimeout(r, 400));
+  await supabase
+    .from("presenter_video_jobs")
+    .update({ progress: 55, updated_at: new Date().toISOString() })
+    .eq("id", job.id);
+
+  await new Promise((r) => setTimeout(r, 400));
+  await supabase
+    .from("presenter_video_jobs")
+    .update({ progress: 85, updated_at: new Date().toISOString() })
+    .eq("id", job.id);
+
+  await new Promise((r) => setTimeout(r, 400));
+
+  const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
+
+  const { error: doneErr } = await supabase
+    .from("presenter_video_jobs")
+    .update({
+      status: "completed",
+      progress: 100,
+      video_url: fakeUrl,
+      provider: "mock",
+      provider_job_id: String(job.id),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  if (doneErr) return jsonError(500, "job_complete_failed", doneErr.message);
+
   return NextResponse.json({
     ok: true,
-    route: "/api/video-worker",
-    hasSecret: !!secret,
-    secretMatches: !!secret && timingSafeEqual(secret, expected),
-    message: "Use POST to process jobs.",
+    didWork: true,
+    job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
   });
 }
 
+// IMPORTANT: cron calls GET, so GET must do the work
+export async function GET(req: Request) {
+  try {
+    return await runOnce(req);
+  } catch (e: any) {
+    console.error("VIDEO_WORKER_ERROR", e);
+    return jsonError(500, "internal_error", e?.message ?? String(e));
+  }
+}
+
+// Optional: allow manual POST too
 export async function POST(req: Request) {
   try {
-    const secret = getSecret(req);
-    const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
-
-    if (!secret || !timingSafeEqual(secret, expected)) {
-      return jsonError(401, "unauthorized_worker");
-    }
-
-    const supabase = supabaseAdmin();
-
-    const { data: job, error: pickErr } = await supabase
-      .from("presenter_video_jobs")
-      .select("*")
-      .eq("status", "queued")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
-
-    if (!job) {
-      return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
-    }
-
-    const { error: lockErr } = await supabase
-      .from("presenter_video_jobs")
-      .update({
-        status: "processing",
-        progress: 5,
-        error: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id);
-
-    if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
-
-    // mock pipeline
-    await new Promise((r) => setTimeout(r, 400));
-    await supabase.from("presenter_video_jobs").update({ progress: 25, updated_at: new Date().toISOString() }).eq("id", job.id);
-
-    await new Promise((r) => setTimeout(r, 400));
-    await supabase.from("presenter_video_jobs").update({ progress: 55, updated_at: new Date().toISOString() }).eq("id", job.id);
-
-    await new Promise((r) => setTimeout(r, 400));
-    await supabase.from("presenter_video_jobs").update({ progress: 85, updated_at: new Date().toISOString() }).eq("id", job.id);
-
-    await new Promise((r) => setTimeout(r, 400));
-
-    const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
-
-    const { error: doneErr } = await supabase
-      .from("presenter_video_jobs")
-      .update({
-        status: "completed",
-        progress: 100,
-        video_url: fakeUrl,
-        provider: "mock",
-        provider_job_id: String(job.id),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id);
-
-    if (doneErr) return jsonError(500, "job_complete_failed", doneErr.message);
-
-    return NextResponse.json({
-      ok: true,
-      didWork: true,
-      job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
-    });
+    return await runOnce(req);
   } catch (e: any) {
     console.error("VIDEO_WORKER_ERROR", e);
     return jsonError(500, "internal_error", e?.message ?? String(e));
