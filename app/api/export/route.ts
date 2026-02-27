@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,10 +61,7 @@ export async function POST(req: Request) {
   //////////////////////////////////////////////////
   const body = await req.json().catch(() => null);
   if (!body?.presenter) {
-    return NextResponse.json(
-      { error: "Missing presenter data" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Missing presenter data" }, { status: 400 });
   }
 
   const presenter = body.presenter as any;
@@ -72,7 +69,25 @@ export async function POST(req: Request) {
   const prompt = typeof body?.prompt === "string" ? body.prompt : null;
 
   //////////////////////////////////////////////////
-  // 4) BUILD EXPORT PACKAGE (json)
+  // 4) LOAD LATEST SCRIPT (source of truth = presenter_scripts.content)
+  //////////////////////////////////////////////////
+  let scriptContent: string | null = null;
+
+  if (presenterId) {
+    const { data: scriptRow, error: scriptErr } = await supabaseAdmin
+      .from("presenter_scripts")
+      .select("content")
+      .eq("presenter_id", presenterId)
+      .maybeSingle();
+
+    // best-effort (nu blocăm export-ul dacă script query pică)
+    if (!scriptErr) {
+      scriptContent = (scriptRow?.content ?? null) as string | null;
+    }
+  }
+
+  //////////////////////////////////////////////////
+  // 5) BUILD EXPORT PACKAGE (json)
   //////////////////////////////////////////////////
   const exportPackage = {
     exported_at: new Date().toISOString(),
@@ -82,7 +97,8 @@ export async function POST(req: Request) {
       name: presenter.name ?? null,
       title: presenter.title ?? null,
       bio: presenter.bio ?? null,
-      script: presenter.script ?? null,
+      // ✅ preferăm source-of-truth (presenter_scripts.content)
+      script: scriptContent ?? presenter.script ?? null,
       appearance: presenter.appearance ?? null,
       image: presenter.image ?? null,
       image_path: presenter.image_path ?? null,
@@ -91,7 +107,7 @@ export async function POST(req: Request) {
   };
 
   //////////////////////////////////////////////////
-  // 5) UPLOAD JSON TO STORAGE
+  // 6) UPLOAD JSON TO STORAGE
   //////////////////////////////////////////////////
   const fileName = `idive-presenter-${Date.now()}.json`;
   const filePath = `${userId}/${presenterId ?? "no-presenter"}/${fileName}`;
@@ -124,7 +140,7 @@ export async function POST(req: Request) {
   const fileUrl = signed.data.signedUrl;
 
   //////////////////////////////////////////////////
-  // 6) WRITE exports ROW (matches your schema)
+  // 7) WRITE exports ROW (matches your schema)
   // presenter jsonb is NOT NULL => we must include it
   //////////////////////////////////////////////////
   const ins = await supabaseAdmin

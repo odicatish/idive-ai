@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { openaiServer } from "@/lib/openai/client";
+import type OpenAI from "openai";
 
 export const runtime = "nodejs";
 
@@ -32,8 +33,6 @@ function getPresenterId(req: Request, context: any) {
   }
 }
 
-// A small, safe mapping for better instruction quality.
-// If unknown tag, we still use the tag.
 function languageName(tag: string) {
   const t = (tag || "").toLowerCase();
   const map: Record<string, string> = {
@@ -73,7 +72,7 @@ function languageName(tag: string) {
   return map[t] ?? t;
 }
 
-async function detectLanguageTag(openai: ReturnType<typeof openaiServer>, text: string) {
+async function detectLanguageTag(openai: OpenAI, text: string) {
   const sample = (text ?? "").trim();
   if (!sample) return "en";
 
@@ -83,7 +82,6 @@ async function detectLanguageTag(openai: ReturnType<typeof openaiServer>, text: 
     properties: {
       tag: {
         type: "string",
-        // keep it tight but practical for your app
         enum: [
           "en",
           "ro",
@@ -128,8 +126,7 @@ async function detectLanguageTag(openai: ReturnType<typeof openaiServer>, text: 
     input: [
       {
         role: "system",
-        content:
-          "Detect the user's language from the text. Return ONLY JSON that matches the schema.",
+        content: "Detect the user's language from the text. Return ONLY JSON that matches the schema.",
       },
       { role: "user", content: sample.slice(0, 1200) },
     ],
@@ -149,8 +146,7 @@ async function detectLanguageTag(openai: ReturnType<typeof openaiServer>, text: 
   try {
     const parsed = JSON.parse(raw);
     const tag = String(parsed?.tag ?? "").toLowerCase().trim();
-    if (!tag) return "en";
-    return tag;
+    return tag || "en";
   } catch {
     return "en";
   }
@@ -162,7 +158,6 @@ export async function POST(req: Request, context: any) {
 
   const body = await safeJson(req);
 
-  // UI can send "auto" or a specific tag; default = auto
   const requestedLanguage =
     typeof body?.language === "string" ? String(body.language).toLowerCase().trim() : "auto";
 
@@ -205,14 +200,12 @@ export async function POST(req: Request, context: any) {
   const notes = String(merged?.notes ?? "");
 
   const draftForAI = incomingContent.trim().length ? incomingContent : String(script.content ?? "");
-  const openai = openaiServer();
+  const openai = openaiServer as unknown as OpenAI;
 
-  // Decide language
   let languageTag = "en";
   if (requestedLanguage !== "auto") {
     languageTag = requestedLanguage || "en";
   } else {
-    // detect from draft + notes + audience + domain
     const detectText = `${draftForAI}\n\n${notes}\n\n${audience}\n\n${domain}`.trim();
     try {
       languageTag = await detectLanguageTag(openai, detectText);
@@ -224,7 +217,6 @@ export async function POST(req: Request, context: any) {
 
   const targetLanguageName = languageName(languageTag);
 
-  // Stable schema for generation
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -295,7 +287,6 @@ ${draftForAI}
         },
       },
     });
-
     jsonText = resp.output_text?.trim() ?? "";
   } catch (e: any) {
     console.error("[generate] OPENAI_ERROR", e);
@@ -327,18 +318,23 @@ ${draftForAI}
   const now = new Date().toISOString();
   const reason = "generate";
 
-  // PRE snapshot
-  const { error: preErr } = await supabase.from("presenter_script_versions").insert({
-    script_id: script.id,
-    version: prevVersion,
-    source: "snapshot",
-    meta: { reason, phase: "pre" },
-    content: String(script.content ?? ""),
-    created_by: auth.user.id,
-  });
+  // ✅ PRE snapshot (no duplicate crashes)
+  const { error: preErr } = await supabase
+    .from("presenter_script_versions")
+    .upsert(
+      {
+        script_id: script.id,
+        version: prevVersion,
+        source: "snapshot",
+        meta: { reason, phase: "pre" },
+        content: String(script.content ?? ""),
+        created_by: auth.user.id,
+      },
+      { onConflict: "script_id,version", ignoreDuplicates: true }
+    );
+
   if (preErr) return jsonError(500, "version_presnapshot_failed", preErr.message);
 
-  // update script
   const { error: upErr } = await supabase
     .from("presenter_scripts")
     .update({
@@ -346,28 +342,33 @@ ${draftForAI}
       version: nextVersion,
       updated_at: now,
       updated_by: auth.user.id,
-      language: languageTag, // ✅ store tag we chose/detected
+      language: languageTag,
     } as any)
     .eq("id", script.id);
 
   if (upErr) return jsonError(500, "script_update_failed", upErr.message);
 
-  // POST snapshot
-  const { error: postErr } = await supabase.from("presenter_script_versions").insert({
-    script_id: script.id,
-    version: nextVersion,
-    source: "snapshot",
-    meta: {
-      reason,
-      phase: "post",
-      ai: {
-        language: String(ai?.language ?? languageTag),
-        sections: ai?.sections ?? null,
+  // ✅ POST snapshot (no duplicate crashes)
+  const { error: postErr } = await supabase
+    .from("presenter_script_versions")
+    .upsert(
+      {
+        script_id: script.id,
+        version: nextVersion,
+        source: "snapshot",
+        meta: {
+          reason,
+          phase: "post",
+          ai: {
+            language: String(ai?.language ?? languageTag),
+            sections: ai?.sections ?? null,
+          },
+        },
+        content: finalText,
+        created_by: auth.user.id,
       },
-    },
-    content: finalText,
-    created_by: auth.user.id,
-  });
+      { onConflict: "script_id,version", ignoreDuplicates: true }
+    );
 
   if (postErr) return jsonError(500, "version_postsnapshot_failed", postErr.message);
 

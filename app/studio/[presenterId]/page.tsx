@@ -18,11 +18,9 @@ export default async function StudioPage({ params }: { params: Params }) {
 
   const supabase = await supabaseServer();
 
-  // auth
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) redirect("/login");
 
-  // owner check + load presenter context
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id,name,context")
@@ -35,7 +33,6 @@ export default async function StudioPage({ params }: { params: Params }) {
   }
   if (!presenter || presenter.user_id !== auth.user.id) notFound();
 
-  // load script
   const { data: existingScript, error: sErr } = await supabase
     .from("presenter_scripts")
     .select("*")
@@ -49,7 +46,6 @@ export default async function StudioPage({ params }: { params: Params }) {
 
   let script = existingScript;
 
-  // auto-create script if missing
   if (!script) {
     const { data: inserted, error: insErr } = await supabase
       .from("presenter_scripts")
@@ -70,19 +66,22 @@ export default async function StudioPage({ params }: { params: Params }) {
 
     script = inserted;
 
-    // best-effort history
+    // ✅ history (best effort, ignore duplicates)
     const { error: histErr } = await supabase
       .from("presenter_script_versions")
-      .insert({
-        script_id: script.id,
-        content: script.content,
-        version: script.version,
-        source: "snapshot",
-        meta: { reason: "bootstrap" },
-        created_by: auth.user.id,
-      });
+      .upsert(
+        {
+          script_id: script.id,
+          content: script.content ?? "",
+          version: script.version ?? 1,
+          source: "snapshot",
+          meta: { reason: "bootstrap" },
+          created_by: auth.user.id,
+        },
+        { onConflict: "script_id,version", ignoreDuplicates: true }
+      );
 
-    if (histErr) console.warn("SCRIPT_HISTORY_INSERT_WARN", histErr);
+    if (histErr) console.warn("SCRIPT_HISTORY_UPSERT_WARN(StudioPage)", histErr);
   }
 
   return (

@@ -1,6 +1,6 @@
 // app/api/generate-script/route.ts
 import OpenAI from "openai";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
@@ -47,19 +47,12 @@ const presenterSchema = {
 } as const;
 
 async function getSignedUrl(path: string) {
-  const signed = await supabaseAdmin.storage
-    .from(BUCKET)
-    .createSignedUrl(path, 60 * 60);
-
+  const signed = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(path, 60 * 60);
   if (signed.error) throw new Error(`Signed URL failed: ${signed.error.message}`);
   if (!signed.data?.signedUrl) throw new Error("Signed URL missing signedUrl");
-
   return signed.data.signedUrl;
 }
 
-/**
- * SSR session -> user id
- */
 async function getUserIdFromSession(): Promise<string | null> {
   try {
     const cookieStore = await cookies();
@@ -73,7 +66,6 @@ async function getUserIdFromSession(): Promise<string | null> {
             return cookieStore.getAll();
           },
           setAll(cookiesToSet) {
-            // in route handlers cookies() poate fi read-only; ignorăm setAll
             try {
               cookiesToSet.forEach(({ name, value, options }) => {
                 cookieStore.set(name, value, options);
@@ -103,20 +95,14 @@ export async function POST(req: Request) {
       body = {};
     }
 
-    // ✅ session user_id
     const userId = await getUserIdFromSession();
-    if (!userId) {
-      return Response.json({ error: "unauthorized" }, { status: 401 });
-    }
+    if (!userId) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-    // ✅ user prompt optional
     const userPrompt =
-      typeof body.prompt === "string" && body.prompt.trim().length > 0
-        ? body.prompt.trim()
-        : null;
+      typeof body.prompt === "string" && body.prompt.trim().length > 0 ? body.prompt.trim() : null;
 
-    // ✅ context optional
     const ctxIn = body?.context && typeof body.context === "object" ? body.context : {};
+
     const context = {
       location: normalizeStr(ctxIn.location, 160),
       domain: normalizeStr(ctxIn.domain, 120) || normalizeStr(body.industry, 120),
@@ -141,9 +127,7 @@ Add subtle cinematic micro-moments (1–2 vivid lines max), never cheesy.
 Keep the language natural and spoken, not robotic.
 `.trim();
 
-    //////////////////////////////////////////////////////
-    // ✅ WARDROBE MODE (păstrat)
-    //////////////////////////////////////////////////////
+    // WARDROBE MODE
     if (body.presenter && body.wardrobe) {
       const locked = body.presenter as any;
 
@@ -192,10 +176,7 @@ natural imperfections
       });
 
       if (up.error) {
-        return Response.json(
-          { error: "Storage upload failed", details: up.error.message },
-          { status: 500 }
-        );
+        return Response.json({ error: "Storage upload failed", details: up.error.message }, { status: 500 });
       }
 
       if (locked.id) {
@@ -211,9 +192,7 @@ natural imperfections
       });
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ NEW HUMAN MODE
-    //////////////////////////////////////////////////////
+    // NEW HUMAN MODE
     const genderIn = body.gender || "any";
     const age = body.age || "30-45";
     const industry = body.industry || "business";
@@ -293,10 +272,7 @@ Return ONLY the JSON object.
 
     const jsonText = response.output_text?.trim();
     if (!jsonText) {
-      return Response.json(
-        { error: "Text generation failed (empty output_text)" },
-        { status: 500 }
-      );
+      return Response.json({ error: "Text generation failed (empty output_text)" }, { status: 500 });
     }
 
     let presenter: PresenterJson;
@@ -309,9 +285,6 @@ Return ONLY the JSON object.
       );
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ IMAGE prompt
-    //////////////////////////////////////////////////////
     const imagePrompt = `
 Ultra realistic cinematic portrait.
 
@@ -345,15 +318,9 @@ extreme detail
 
     const b64 = img.data?.[0]?.b64_json;
     if (!b64) {
-      return Response.json(
-        { error: "Image generation failed (no base64 returned)" },
-        { status: 500 }
-      );
+      return Response.json({ error: "Image generation failed (no base64 returned)" }, { status: 500 });
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ INSERT presenter
-    //////////////////////////////////////////////////////
     const ins = await supabaseAdmin
       .from("presenters")
       .insert({
@@ -375,9 +342,6 @@ extreme detail
 
     const presenterId = ins.data.id as string;
 
-    //////////////////////////////////////////////////////
-    // ✅ upload image
-    //////////////////////////////////////////////////////
     const bytes = Buffer.from(b64, "base64");
     const filePath = `${presenterId}/${randomId()}.png`;
 
@@ -387,41 +351,43 @@ extreme detail
     });
 
     if (up.error) {
-      return Response.json(
-        { error: "Storage upload failed", details: up.error.message },
-        { status: 500 }
-      );
+      return Response.json({ error: "Storage upload failed", details: up.error.message }, { status: 500 });
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ update image_path
-    //////////////////////////////////////////////////////
     await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", presenterId);
 
-    //////////////////////////////////////////////////////
-    // ✅ INSERT presenter_scripts (schema TA: script + version + created_by)
-    //////////////////////////////////////////////////////
     const scriptIns = await supabaseAdmin
       .from("presenter_scripts")
       .insert({
         presenter_id: presenterId,
-        script: presenter.script ?? "",
+        content: presenter.script ?? "",
+        language: "ro",
         version: 1,
         created_by: userId,
+        updated_by: userId,
       })
-      .select("id, version")
+      .select("id,version,content")
       .single();
 
-    if (scriptIns.error || !scriptIns.data?.id) {
-      return Response.json(
-        { error: "Failed to save script", details: scriptIns.error?.message ?? "unknown" },
-        { status: 500 }
-      );
+    if (!scriptIns.error && scriptIns.data?.id) {
+      // ✅ history (no duplicate crashes)
+      await supabaseAdmin
+        .from("presenter_script_versions")
+        .upsert(
+          {
+            script_id: scriptIns.data.id,
+            content: scriptIns.data.content,
+            version: scriptIns.data.version,
+            source: "snapshot",
+            meta: { reason: "generate-script" },
+            created_by: userId,
+          },
+          { onConflict: "script_id,version", ignoreDuplicates: true }
+        );
     }
 
     const signedUrl = await getSignedUrl(filePath);
 
-    // ✅ IMPORTANT: return script_id + script_version pentru video-jobs/create
     return Response.json({
       id: presenterId,
       ...presenter,
@@ -429,8 +395,6 @@ extreme detail
       image: signedUrl,
       prompt: userPrompt,
       context,
-      script_id: scriptIns.data.id,
-      script_version: scriptIns.data.version,
     });
   } catch (error: any) {
     console.error("AI ROUTE ERROR:", error);

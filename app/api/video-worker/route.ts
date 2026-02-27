@@ -45,16 +45,24 @@ function supabaseAdmin() {
   });
 }
 
+function getExpectedSecret() {
+  // IMPORTANT: în prod, set VIDEO_WORKER_SECRET obligatoriu.
+  // Dacă nu e setat, refuzăm request-ul (mai sigur decât un default hardcodat).
+  const expected = (process.env.VIDEO_WORKER_SECRET || "").trim();
+  return expected;
+}
+
 export async function GET(req: Request) {
   // GET = healthcheck public (NU cere secret)
   const secret = getSecret(req);
-  const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
+  const expected = getExpectedSecret();
 
   return NextResponse.json({
     ok: true,
     route: "/api/video-worker",
     hasSecret: !!secret,
-    secretMatches: !!secret && timingSafeEqual(secret, expected),
+    secretConfigured: !!expected,
+    secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
     message: "POST will process one queued job (requires secret).",
   });
 }
@@ -62,7 +70,11 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const secret = getSecret(req);
-    const expected = process.env.VIDEO_WORKER_SECRET || "dev_secret_123";
+    const expected = getExpectedSecret();
+
+    if (!expected) {
+      return jsonError(500, "worker_secret_missing", "Set VIDEO_WORKER_SECRET in env.");
+    }
 
     if (!secret || !timingSafeEqual(secret, expected)) {
       return jsonError(401, "unauthorized_worker");
@@ -70,6 +82,7 @@ export async function POST(req: Request) {
 
     const supabase = supabaseAdmin();
 
+    // 1) pick next queued job
     const { data: job, error: pickErr } = await supabase
       .from("presenter_video_jobs")
       .select("*")
@@ -84,19 +97,34 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
     }
 
-    const { error: lockErr } = await supabase
+    const nowIso = new Date().toISOString();
+
+    // 2) atomic lock: update only if still queued
+    const { data: locked, error: lockErr } = await supabase
       .from("presenter_video_jobs")
       .update({
         status: "processing",
         progress: 5,
         error: null,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       })
-      .eq("id", job.id);
+      .eq("id", job.id)
+      .eq("status", "queued")
+      .select("id,status,progress,presenter_id")
+      .maybeSingle();
 
     if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
 
-    // mock pipeline
+    // if someone else already took it
+    if (!locked) {
+      return NextResponse.json({
+        ok: true,
+        didWork: false,
+        message: "Job was already taken by another worker run.",
+      });
+    }
+
+    // mock pipeline (best-effort progress updates)
     await new Promise((r) => setTimeout(r, 400));
     await supabase
       .from("presenter_video_jobs")
@@ -119,6 +147,7 @@ export async function POST(req: Request) {
 
     const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
 
+    // 3) complete
     const { error: doneErr } = await supabase
       .from("presenter_video_jobs")
       .update({

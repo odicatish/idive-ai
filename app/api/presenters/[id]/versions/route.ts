@@ -92,17 +92,31 @@ export async function POST(_req: Request, ctx: { params: Params }) {
     if (sErr) throw sErr;
 
     const { data: inserted, error: insErr } = await supabase
-      .from("presenter_script_versions")
-      .insert({
-        script_id: script.id,
-        content: script.content ?? "",
-        version: script.version ?? 1,
-        source: "snapshot",
-        meta: { reason: "manual" },
-        created_by: user!.id,
-      })
-      .select("id,script_id,version,source,meta,created_at,created_by")
-      .single();
+  .from("presenter_script_versions")
+  .upsert(
+    {
+      // păstrează exact câmpurile pe care le aveai în insert
+      // (script_id, version, content, source, meta, created_by etc)
+      ...({
+        // EXEMPLU (înlocuiește cu payload-ul tău real):
+        // script_id,
+        // version,
+        // content,
+        // source: "snapshot",
+        // meta: { reason: "manual" },
+        // created_by: auth.user.id,
+      } as any),
+    },
+    { onConflict: "script_id,version", ignoreDuplicates: true }
+  )
+  .select("id,script_id,version,source,meta,created_at,created_by")
+  .single();
+
+if (insErr) {
+  // Dacă e duplicat, upsert cu ignoreDuplicates poate întoarce empty row în unele cazuri.
+  // Nu vrem să crăpăm endpoint-ul.
+  console.warn("VERSIONS_UPSERT_WARN", insErr);
+}
 
     if (insErr) throw insErr;
 

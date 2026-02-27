@@ -134,21 +134,25 @@ export async function POST(req: Request, ctx: any) {
 
     // 1) safety snapshot BEFORE overwrite (source trebuie să rămână "snapshot")
     const { error: snapErr } = await supabase
-      .from("presenter_script_versions")
-      .insert({
-        script_id: script.id,
-        version: nextVersion,
-        source: "snapshot",
-        meta: {
-          reason: "pre_restore_snapshot",
-          from_version_id: vRow.id,
-          from_version: vRow.version,
-          previous_script_version: script.version ?? null,
-        },
-        content: script.content ?? "",
-        created_by: auth.user.id,
-      });
+  .from("presenter_script_versions")
+  .upsert(
+    {
+      // pune aici exact obiectul pe care îl aveai în insert
+      // (script_id, version, content, source, meta, created_by)
+      ...({
+        // EXEMPLU:
+        // script_id: script.id,
+        // version: script.version,
+        // content: script.content ?? "",
+        // source: "snapshot",
+        // meta: { reason: "restore", phase: "pre" },
+        // created_by: auth.user.id,
+      } as any),
+    },
+    { onConflict: "script_id,version", ignoreDuplicates: true }
+  );
 
+if (snapErr) console.warn("RESTORE_SNAPSHOT_UPSERT_WARN(pre)", snapErr);
     if (snapErr) throw snapErr;
 
     // 2) overwrite current script with selected version content + bump version
@@ -165,20 +169,25 @@ export async function POST(req: Request, ctx: any) {
     if (upErr) throw upErr;
 
     // 3) record restore action as another "snapshot" (action stored in meta.reason)
-    const { error: insErr } = await supabase
-      .from("presenter_script_versions")
-      .insert({
-        script_id: script.id,
-        version: nextVersion,
-        source: "snapshot",
-        meta: {
-          reason: "restore",
-          from_version_id: vRow.id,
-          from_version: vRow.version,
-        },
-        content: targetContent,
-        created_by: auth.user.id,
-      });
+   const { error: insErr } = await supabase
+  .from("presenter_script_versions")
+  .upsert(
+    {
+      // pune aici exact obiectul pe care îl aveai în insert
+      ...({
+        // EXEMPLU:
+        // script_id: script.id,
+        // version: nextVersion,
+        // content: restoredContent,
+        // source: "snapshot",
+        // meta: { reason: "restore", phase: "post" },
+        // created_by: auth.user.id,
+      } as any),
+    },
+    { onConflict: "script_id,version", ignoreDuplicates: true }
+  );
+
+if (insErr) console.warn("RESTORE_SNAPSHOT_UPSERT_WARN(post)", insErr);
 
     if (insErr) throw insErr;
 
