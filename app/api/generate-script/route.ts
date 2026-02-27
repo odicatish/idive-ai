@@ -58,8 +58,7 @@ async function getSignedUrl(path: string) {
 }
 
 /**
- * SSR session -> user id (fără să schimbi arhitectura)
- * Folosim @supabase/ssr direct aici ca să setăm presenters.user_id corect.
+ * SSR session -> user id
  */
 async function getUserIdFromSession(): Promise<string | null> {
   try {
@@ -74,8 +73,7 @@ async function getUserIdFromSession(): Promise<string | null> {
             return cookieStore.getAll();
           },
           setAll(cookiesToSet) {
-            // în route handler, cookies() e read-only uneori; SSR client poate cere setAll
-            // Ignorăm setarea aici — pentru getUser e suficient să citim.
+            // in route handlers cookies() poate fi read-only; ignorăm setAll
             try {
               cookiesToSet.forEach(({ name, value, options }) => {
                 cookieStore.set(name, value, options);
@@ -105,37 +103,29 @@ export async function POST(req: Request) {
       body = {};
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ session user_id (pentru ownership + audit)
-    //////////////////////////////////////////////////////
+    // ✅ session user_id
     const userId = await getUserIdFromSession();
     if (!userId) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
-    //////////////////////////////////////////////////////
-    // ✅ USER PROMPT (optional)
-    //////////////////////////////////////////////////////
+    // ✅ user prompt optional
     const userPrompt =
       typeof body.prompt === "string" && body.prompt.trim().length > 0
         ? body.prompt.trim()
         : null;
 
-    //////////////////////////////////////////////////////
-    // ✅ CONTEXT (Scene / Domain / Audience / Tone / Visual)
-    //////////////////////////////////////////////////////
+    // ✅ context optional
     const ctxIn = body?.context && typeof body.context === "object" ? body.context : {};
-
     const context = {
       location: normalizeStr(ctxIn.location, 160),
-      domain: normalizeStr(ctxIn.domain, 120) || normalizeStr(body.industry, 120), // fallback din industry
+      domain: normalizeStr(ctxIn.domain, 120) || normalizeStr(body.industry, 120),
       audience: normalizeStr(ctxIn.audience, 140),
       tone: normalizeStr(ctxIn.tone, 40) || "premium",
       visual: normalizeStr(ctxIn.visual, 60) || "apple-cinematic",
       notes: normalizeStr(ctxIn.notes, 400),
     };
 
-    // mic “director’s card” care ridică calitatea
     const contextBlock = `
 SCENE / CONTEXT (VERY IMPORTANT):
 - Location: ${context.location || "not specified"}
@@ -209,10 +199,7 @@ natural imperfections
       }
 
       if (locked.id) {
-        await supabaseAdmin
-          .from("presenters")
-          .update({ image_path: filePath })
-          .eq("id", locked.id);
+        await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", locked.id);
       }
 
       const signedUrl = await getSignedUrl(filePath);
@@ -323,7 +310,7 @@ Return ONLY the JSON object.
     }
 
     //////////////////////////////////////////////////////
-    // ✅ IMAGE (force gender in prompt too)
+    // ✅ IMAGE prompt
     //////////////////////////////////////////////////////
     const imagePrompt = `
 Ultra realistic cinematic portrait.
@@ -365,7 +352,7 @@ extreme detail
     }
 
     //////////////////////////////////////////////////////
-    // ✅ INSERT presenter (include user_id + context)
+    // ✅ INSERT presenter
     //////////////////////////////////////////////////////
     const ins = await supabaseAdmin
       .from("presenters")
@@ -377,16 +364,13 @@ extreme detail
         script: presenter.script,
         appearance: presenter.appearance,
         prompt: userPrompt,
-        context, // ✅ new
+        context,
       })
       .select("id")
       .single();
 
     if (ins.error) {
-      return Response.json(
-        { error: "DB insert failed", details: ins.error.message },
-        { status: 500 }
-      );
+      return Response.json({ error: "DB insert failed", details: ins.error.message }, { status: 500 });
     }
 
     const presenterId = ins.data.id as string;
@@ -412,41 +396,32 @@ extreme detail
     //////////////////////////////////////////////////////
     // ✅ update image_path
     //////////////////////////////////////////////////////
-    await supabaseAdmin
-      .from("presenters")
-      .update({ image_path: filePath })
-      .eq("id", presenterId);
+    await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", presenterId);
 
     //////////////////////////////////////////////////////
-    // ✅ ALSO seed presenter_scripts + versions (so Studio loads instantly)
+    // ✅ INSERT presenter_scripts (schema TA: script + version + created_by)
     //////////////////////////////////////////////////////
     const scriptIns = await supabaseAdmin
       .from("presenter_scripts")
       .insert({
         presenter_id: presenterId,
-        content: presenter.script ?? "",
-        language: "ro",
+        script: presenter.script ?? "",
         version: 1,
         created_by: userId,
-        updated_by: userId,
       })
-      .select("id,version,content")
+      .select("id, version")
       .single();
 
-    if (!scriptIns.error && scriptIns.data?.id) {
-      // best-effort history
-      await supabaseAdmin.from("presenter_script_versions").insert({
-        script_id: scriptIns.data.id,
-        content: scriptIns.data.content,
-        version: scriptIns.data.version,
-        source: "snapshot",
-        meta: { reason: "generate-script" },
-        created_by: userId,
-      });
+    if (scriptIns.error || !scriptIns.data?.id) {
+      return Response.json(
+        { error: "Failed to save script", details: scriptIns.error?.message ?? "unknown" },
+        { status: 500 }
+      );
     }
 
     const signedUrl = await getSignedUrl(filePath);
 
+    // ✅ IMPORTANT: return script_id + script_version pentru video-jobs/create
     return Response.json({
       id: presenterId,
       ...presenter,
@@ -454,14 +429,13 @@ extreme detail
       image: signedUrl,
       prompt: userPrompt,
       context,
+      script_id: scriptIns.data.id,
+      script_version: scriptIns.data.version,
     });
   } catch (error: any) {
     console.error("AI ROUTE ERROR:", error);
     return Response.json(
-      {
-        error: "Failed to generate presenter",
-        details: String(error?.message || error),
-      },
+      { error: "Failed to generate presenter", details: String(error?.message || error) },
       { status: 500 }
     );
   }
