@@ -1,4 +1,4 @@
-// app/api/video-jobs/[id]/route.ts
+// app/api/video-jobs/run-worker/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
@@ -23,7 +23,7 @@ async function getSupabase() {
   });
 }
 
-export async function GET(_req: Request, ctx: { params: { id: string } }) {
+export async function POST(req: Request) {
   try {
     const supabase = await getSupabase();
 
@@ -32,20 +32,34 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
       return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
 
-    const id = ctx.params.id;
+    const secret = process.env.VIDEO_WORKER_SECRET;
+    if (!secret) {
+      return NextResponse.json({ error: "Missing VIDEO_WORKER_SECRET" }, { status: 500 });
+    }
 
-    const { data: job, error } = await supabase
-      .from("presenter_video_jobs")
-      .select("id,status,progress,error,video_url,updated_at,created_at")
-      .eq("id", id)
-      .eq("created_by", auth.user.id) // ✅ schema ta
-      .maybeSingle();
+    // rulează același deploy, dar server-side (nu expui secret)
+    const url = new URL(req.url);
+    const origin = `${url.protocol}//${url.host}`;
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    if (!job) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+    const r = await fetch(`${origin}/api/video-worker?secret=${encodeURIComponent(secret)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
 
-    return NextResponse.json({ ok: true, job }, { status: 200 });
+    const txt = await r.text().catch(() => "");
+    return NextResponse.json(
+      { ok: r.ok, status: r.status, body: txt ? safeJson(txt) : null },
+      { status: 200 }
+    );
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "unknown_error" }, { status: 500 });
+  }
+}
+
+function safeJson(txt: string) {
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return txt;
   }
 }

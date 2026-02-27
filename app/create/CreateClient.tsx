@@ -1,6 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase-browser";
@@ -19,10 +18,17 @@ type Presenter = {
   prompt?: string | null;
 };
 
-export default function Create() {
+type VideoJob = {
+  id: string;
+  status: string;
+  progress: number;
+  error: string | null;
+  video_url: string | null;
+};
+
+export default function CreateClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-
   const supabase = useMemo(() => supabaseBrowser(), []);
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -30,23 +36,16 @@ export default function Create() {
 
   const [prompt, setPrompt] = useState("");
 
-  const [exporting, setExporting] = useState(false);
-  const [exportUrl, setExportUrl] = useState<string | null>(null);
-  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  // video job state
+  const [job, setJob] = useState<VideoJob | null>(null);
+  const [jobMsg, setJobMsg] = useState<string | null>(null);
+  const [jobBusy, setJobBusy] = useState(false);
 
   const [gender, setGender] = useState("any");
   const [age, setAge] = useState("30-45");
   const [industry, setIndustry] = useState("business");
   const [energy, setEnergy] = useState("executive");
   const [style, setStyle] = useState("authoritative");
-
-  // ✅ video job state
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<string | null>(null);
-  const [jobProgress, setJobProgress] = useState<number>(0);
-  const [jobVideoUrl, setJobVideoUrl] = useState<string | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
-  const [jobPolling, setJobPolling] = useState(false);
 
   const steps = useMemo(
     () => [
@@ -61,13 +60,11 @@ export default function Create() {
   const [stepIndex, setStepIndex] = useState(0);
 
   const redirectToLogin = () => {
-    const next = encodeURIComponent(
-      window.location.pathname + window.location.search
-    );
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
     window.location.href = `/login?next=${next}`;
   };
 
-  // 1) session guard
+  // session guard
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -75,7 +72,15 @@ export default function Create() {
     })();
   }, [supabase]);
 
-  // 2) After Stripe redirect: poll /api/stripe/status
+  // loader step text
+  useEffect(() => {
+    if (phase !== "loading") return;
+    setStepIndex(0);
+    const i = setInterval(() => setStepIndex((p) => (p + 1) % steps.length), 900);
+    return () => clearInterval(i);
+  }, [phase, steps]);
+
+  // After Stripe redirect: poll /api/stripe/status (păstrez cum îl aveai)
   useEffect(() => {
     const checkout = searchParams.get("checkout");
     if (checkout !== "success") return;
@@ -84,7 +89,6 @@ export default function Create() {
 
     (async () => {
       try {
-        setExportMsg("Confirming subscription...");
         for (let i = 0; i < 10; i++) {
           const res = await fetch("/api/stripe/status", { method: "GET" });
 
@@ -94,11 +98,7 @@ export default function Create() {
           }
 
           const status = await res.json();
-
-          if (status?.pro) {
-            setExportMsg("✅ Subscription active. Export unlocked.");
-            break;
-          }
+          if (status?.pro) break;
 
           await new Promise((r) => setTimeout(r, 1500));
           if (!alive) return;
@@ -107,7 +107,6 @@ export default function Create() {
         // ignore
       } finally {
         router.replace("/create");
-        setTimeout(() => setExportMsg(null), 2500);
       }
     })();
 
@@ -116,17 +115,6 @@ export default function Create() {
     };
   }, [searchParams, router]);
 
-  // loader step text
-  useEffect(() => {
-    if (phase !== "loading") return;
-    setStepIndex(0);
-    const i = setInterval(() => {
-      setStepIndex((p) => (p + 1) % steps.length);
-    }, 900);
-    return () => clearInterval(i);
-  }, [phase, steps]);
-
-  // helpers
   const postJSON = async (url: string, body?: any) => {
     const res = await fetch(url, {
       method: "POST",
@@ -147,120 +135,10 @@ export default function Create() {
     return res.json();
   };
 
-  const downloadFromUrl = async (url: string, filename: string) => {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`Download failed: ${r.status}`);
-    const blob = await r.blob();
-
-    const objUrl = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = objUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(objUrl);
-  };
-
-  // ✅ video jobs helpers
-  const startVideoJob = async () => {
-    if (!presenter?.id) {
-      alert("Missing presenter id.");
-      return;
-    }
-
-    setJobError(null);
-    setJobVideoUrl(null);
-    setJobStatus("queued");
-    setJobProgress(0);
-    setJobPolling(true);
-
-    try {
-      const data = await postJSON("/api/video-jobs/create", {
-        presenterId: presenter.id,
-      });
-      if (!data) return;
-
-      const id = data?.job?.id as string | undefined;
-      if (!id) throw new Error("Create job ok, but missing job.id");
-
-      setJobId(id);
-      setExportMsg("🎬 Video job created. Processing...");
-    } catch (e: any) {
-      console.error(e);
-      setJobPolling(false);
-      setJobError(e?.message ?? "Failed to create job");
-      setExportMsg(null);
-    }
-  };
-
-  const fetchJobStatus = async (id: string) => {
-    const res = await fetch(`/api/video-jobs/${id}`, { method: "GET" });
-
-    if (res.status === 401) {
-      redirectToLogin();
-      return null;
-    }
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`Status failed: ${res.status} ${txt}`);
-    }
-    return res.json();
-  };
-
-  // ✅ Poll job status
-  useEffect(() => {
-    if (!jobId || !jobPolling) return;
-
-    let alive = true;
-
-    const tick = async () => {
-      try {
-        const data = await fetchJobStatus(jobId);
-        if (!alive || !data) return;
-
-        const job = data?.job;
-        if (!job) return;
-
-        setJobStatus(job.status ?? null);
-        setJobProgress(Number(job.progress ?? 0));
-        setJobError(job.error ?? null);
-        setJobVideoUrl(job.video_url ?? null);
-
-        if (job.status === "completed" || job.status === "failed") {
-          setJobPolling(false);
-          setExportMsg(job.status === "completed" ? "✅ Video ready!" : "❌ Video failed.");
-          return;
-        }
-      } catch (e: any) {
-        console.error(e);
-        setJobPolling(false);
-        setJobError(e?.message ?? "Polling failed");
-        setExportMsg(null);
-      }
-    };
-
-    tick();
-    const i = setInterval(tick, 1500);
-
-    return () => {
-      alive = false;
-      clearInterval(i);
-    };
-  }, [jobId, jobPolling]);
-
-  // generate human
+  // generate presenter (same)
   const generateHuman = async () => {
-    // reset export + job state for a fresh run
-    setExportUrl(null);
-    setExportMsg(null);
-
-    setJobId(null);
-    setJobStatus(null);
-    setJobProgress(0);
-    setJobVideoUrl(null);
-    setJobError(null);
-    setJobPolling(false);
+    setJob(null);
+    setJobMsg(null);
 
     setPhase("loading");
     try {
@@ -279,94 +157,106 @@ export default function Create() {
       setPhase("result");
     } catch (e) {
       console.error(e);
-      alert("AI crashed — check terminal.");
+      alert("Generate failed — check logs.");
       setPhase("idle");
     }
   };
 
-  // Stripe checkout
-  const startCheckout = async () => {
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      redirectToLogin();
+  // --- VIDEO JOB FLOW ---
+  const createVideoJob = async () => {
+    if (!presenter?.id) {
+      alert("Missing presenter id. Generate first.");
       return;
     }
 
-    const checkout = await postJSON("/api/stripe/checkout", {
-      presenterId: presenter?.id ?? null,
-    });
+    setJobBusy(true);
+    setJobMsg("Creating video job...");
+    setJob(null);
 
-    if (!checkout) return;
+    try {
+      // 1) create job (server will pick latest script for presenter)
+      const r = await postJSON("/api/video-jobs/create", { presenterId: presenter.id });
+      if (!r) return;
 
-    if (checkout?.url) {
-      window.location.href = checkout.url;
-      return;
+      const jobId = r?.job?.id as string | undefined;
+      if (!jobId) throw new Error("Missing job.id from /api/video-jobs/create");
+
+      setJobMsg("Job created. Triggering worker...");
+      setJob({ id: jobId, status: "queued", progress: 0, error: null, video_url: null });
+
+      // 2) try trigger worker (server-side, secret not exposed)
+      // if this fails, cron will still run later, but ideally this works now
+      try {
+        await fetch("/api/video-jobs/run-worker", { method: "POST" });
+      } catch {}
+
+      // 3) start polling
+      await pollJob(jobId);
+    } catch (e: any) {
+      console.error(e);
+      setJobMsg(null);
+      alert(e?.message ?? "Failed to create job.");
+    } finally {
+      setJobBusy(false);
     }
-
-    alert("Checkout failed.");
   };
 
-  // Export via /api/export
-  const exportVideo = async () => {
-    try {
-      if (!presenter) {
-        alert("Generează un presenter înainte de export.");
-        return;
-      }
+  const pollJob = async (jobId: string) => {
+    setJobMsg("Processing...");
 
-      setExporting(true);
-      setExportUrl(null);
-      setExportMsg("Exporting...");
+    let alive = true;
+    const stopAfterMs = 2 * 60 * 1000; // 2 min
+    const start = Date.now();
 
-      const res = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presenter, prompt }),
-      });
+    while (alive) {
+      const res = await fetch(`/api/video-jobs/${jobId}`, { method: "GET" });
 
       if (res.status === 401) {
         redirectToLogin();
         return;
       }
 
-      if (res.status === 403) {
-        setExportMsg(null);
-        await startCheckout();
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        // show error payload
+        const msg = json?.error ? String(json.error) : `Status ${res.status}`;
+        setJobMsg(`Error: ${msg}`);
         return;
       }
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`Export failed: ${res.status} ${txt}`);
+      const j = json?.job as any;
+      if (j) {
+        setJob({
+          id: j.id,
+          status: j.status,
+          progress: j.progress ?? 0,
+          error: j.error ?? null,
+          video_url: j.video_url ?? null,
+        });
       }
 
-      const data = await res.json();
-      const url = data?.file_url as string | undefined;
-      if (!url) throw new Error("Export ok, but missing file_url.");
+      // stop conditions
+      if (j?.status === "completed") {
+        setJobMsg("✅ Video ready.");
+        return;
+      }
+      if (j?.status === "failed" || j?.error) {
+        setJobMsg(`❌ Failed: ${j?.error ?? "unknown"}`);
+        return;
+      }
 
-      setExportUrl(url);
-      setExportMsg("✅ Export gata! Apasă Download.");
-    } catch (e) {
-      console.error(e);
-      setExportMsg(null);
-      alert("Export failed — check terminal.");
-    } finally {
-      setExporting(false);
-    }
-  };
+      if (Date.now() - start > stopAfterMs) {
+        setJobMsg("Still processing. Leave this tab open or refresh later.");
+        return;
+      }
 
-  const onDownload = async () => {
-    if (!exportUrl) return;
-    try {
-      setExportMsg("Downloading...");
-      await downloadFromUrl(exportUrl, `idive-presenter-${Date.now()}.json`);
-      setExportMsg("✅ Download started.");
-      setTimeout(() => setExportMsg(null), 2000);
-    } catch (e) {
-      console.error(e);
-      setExportMsg(null);
-      alert("Download failed — check terminal.");
+      await new Promise((r) => setTimeout(r, 1500));
     }
+
+    return () => {
+      alive = false;
+    };
   };
 
   // UI: Loading
@@ -387,6 +277,8 @@ export default function Create() {
 
   // UI: Result
   if (phase === "result" && presenter) {
+    const pct = job?.progress ?? 0;
+
     return (
       <div className="min-h-screen bg-black flex items-center justify-center px-6 text-white">
         <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-md w-full border border-neutral-800">
@@ -395,10 +287,7 @@ export default function Create() {
               src={presenter.image}
               className="w-full aspect-[3/4] object-cover"
               alt="Presenter"
-              onError={(e) => {
-                console.error("IMAGE LOAD FAILED:", presenter.image);
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-              }}
+              onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
             />
           )}
 
@@ -407,9 +296,7 @@ export default function Create() {
             <p className="text-neutral-400">{presenter.title}</p>
 
             {presenter.bio && (
-              <p className="text-sm text-neutral-300 mt-4 leading-relaxed">
-                {presenter.bio}
-              </p>
+              <p className="text-sm text-neutral-300 mt-4 leading-relaxed">{presenter.bio}</p>
             )}
 
             {presenter.script && (
@@ -423,12 +310,9 @@ export default function Create() {
               </div>
             )}
 
-            {/* ✅ DIRECT: /studio/<id> */}
+            {/* Studio */}
             <button
-              onClick={() => {
-                if (!presenter?.id) return;
-                router.push(`/studio/${presenter.id}`);
-              }}
+              onClick={() => presenter?.id && router.push(`/studio/${presenter.id}`)}
               className="w-full mt-6 py-4 bg-white text-black rounded-xl font-semibold hover:scale-[1.02] transition"
             >
               Enter Studio
@@ -436,95 +320,51 @@ export default function Create() {
 
             <div className="h-px bg-neutral-800 my-6" />
 
-            {/* ✅ VIDEO WORKER BLOCK */}
-            <div className="text-left bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
-              <p className="text-xs uppercase tracking-wider text-neutral-400 mb-2">
-                Video Worker
-              </p>
-
-              {!jobId && (
-                <button
-                  onClick={startVideoJob}
-                  className="w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
-                >
-                  🎬 Generate Video
-                </button>
-              )}
-
-              {!!jobId && (
-                <div className="space-y-3">
-                  <div className="text-sm text-neutral-200">
-                    Status:{" "}
-                    <span className="text-white">{jobStatus ?? "unknown"}</span>
-                  </div>
-
-                  <div className="w-full h-2 bg-neutral-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-2 bg-white"
-                      style={{
-                        width: `${Math.max(0, Math.min(100, jobProgress))}%`,
-                      }}
-                    />
-                  </div>
-
-                  <div className="text-xs text-neutral-400">
-                    Progress: {jobProgress}%{jobPolling ? " (updating...)" : ""}
-                  </div>
-
-                  {!!jobError && (
-                    <div className="text-xs text-red-300 bg-red-950/30 border border-red-900 rounded-xl p-3">
-                      {jobError}
-                    </div>
-                  )}
-
-                  {!!jobVideoUrl && (
-                    <a
-                      href={jobVideoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block w-full text-center py-3 bg-white text-black rounded-xl font-semibold hover:scale-[1.02] transition"
-                    >
-                      ▶️ Open Video
-                    </a>
-                  )}
-
-                  {!jobPolling && jobStatus !== "completed" && (
-                    <button
-                      onClick={() => setJobPolling(true)}
-                      className="w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
-                    >
-                      🔄 Resume Polling
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {!!exportMsg && (
+            {/* Video job UI */}
+            {!!jobMsg && (
               <div className="text-sm text-neutral-200 bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
-                {exportMsg}
+                {jobMsg}
+              </div>
+            )}
+
+            {job && (
+              <div className="mb-4 text-left bg-black/30 border border-neutral-800 rounded-2xl p-4">
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <span>Status: {job.status}</span>
+                  <span>{pct}%</span>
+                </div>
+                <div className="mt-2 h-2 w-full bg-neutral-800 rounded-full overflow-hidden">
+                  <div className="h-2 bg-white" style={{ width: `${pct}%` }} />
+                </div>
+
+                {job.video_url && (
+                  <a
+                    href={job.video_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-block text-sm underline text-white/90 hover:text-white"
+                  >
+                    Open video
+                  </a>
+                )}
               </div>
             )}
 
             <button
-              onClick={exportVideo}
-              disabled={exporting}
+              onClick={createVideoJob}
+              disabled={jobBusy}
               className="w-full py-4 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition disabled:opacity-60"
             >
-              {exporting ? "Exporting..." : "⬇️ Export"}
+              {jobBusy ? "Working..." : "🎬 Generate Video"}
             </button>
 
-            {exportUrl && (
-              <button
-                onClick={onDownload}
-                className="w-full mt-3 py-3 bg-neutral-900 rounded-xl font-semibold hover:bg-neutral-800 transition"
-              >
-                ⬇️ Download
-              </button>
-            )}
-
             <button
-              onClick={() => setPhase("idle")}
+              onClick={() => {
+                setPhase("idle");
+                setPresenter(null);
+                setJob(null);
+                setJobMsg(null);
+              }}
               className="mt-4 w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
             >
               Generate Another
@@ -539,18 +379,14 @@ export default function Create() {
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
       <div className="w-full max-w-4xl">
-        <h1 className="text-5xl font-bold text-center mb-12">
-          Identity Control Panel
-        </h1>
+        <h1 className="text-5xl font-bold text-center mb-12">Identity Control Panel</h1>
 
         <div className="mb-10">
-          <p className="text-neutral-400 mb-3">
-            Tema / detalii pentru script (opțional)
-          </p>
+          <p className="text-neutral-400 mb-3">Tema / detalii pentru script (opțional)</p>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder='Ex: "Pitch de 30s pentru un SaaS de programări la dentist, ton premium, call-to-action"'
+            placeholder='Ex: "Pitch de 30s pentru un SaaS, ton premium, call-to-action"'
             className="w-full min-h-[110px] px-4 py-3 rounded-2xl bg-black/30 border border-neutral-700 outline-none focus:border-neutral-400 text-white"
           />
           <p className="text-xs text-neutral-500 mt-2">
@@ -559,34 +395,15 @@ export default function Create() {
         </div>
 
         <div className="grid gap-8">
-          <Selector
-            label="Gender"
-            options={["male", "female", "any"]}
-            value={gender}
-            setValue={setGender}
-          />
-
-          <Selector
-            label="Age Range"
-            options={["20-30", "30-45", "45-60"]}
-            value={age}
-            setValue={setAge}
-          />
-
+          <Selector label="Gender" options={["male", "female", "any"]} value={gender} setValue={setGender} />
+          <Selector label="Age Range" options={["20-30", "30-45", "45-60"]} value={age} setValue={setAge} />
           <Selector
             label="Industry"
             options={["business", "technology", "fitness", "finance", "education"]}
             value={industry}
             setValue={setIndustry}
           />
-
-          <Selector
-            label="Energy"
-            options={["calm", "executive", "charismatic", "dominant"]}
-            value={energy}
-            setValue={setEnergy}
-          />
-
+          <Selector label="Energy" options={["calm", "executive", "charismatic", "dominant"]} value={energy} setValue={setEnergy} />
           <Selector
             label="Communication Style"
             options={["authoritative", "friendly", "inspiring", "strategic"]}

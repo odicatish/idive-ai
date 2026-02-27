@@ -33,39 +33,46 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-
-    const presenterId = (body?.presenterId ?? body?.presenter_id ?? "").toString().trim();
-    const scriptId = (body?.scriptId ?? body?.script_id ?? "").toString().trim();
-    const scriptVersionRaw = body?.scriptVersion ?? body?.script_version ?? 1;
-    const scriptVersion = Number(scriptVersionRaw);
-
-    if (!presenterId) return NextResponse.json({ error: "Missing presenterId" }, { status: 400 });
-    if (!scriptId) return NextResponse.json({ error: "Missing scriptId" }, { status: 400 });
-    if (!Number.isFinite(scriptVersion) || scriptVersion < 1) {
-      return NextResponse.json({ error: "Invalid scriptVersion" }, { status: 400 });
+    const presenterId = (body?.presenterId || body?.presenter_id || "").trim();
+    if (!presenterId) {
+      return NextResponse.json({ error: "Missing presenterId" }, { status: 400 });
     }
 
-    const now = new Date().toISOString();
+    // 1) ia cel mai recent script pentru presenter (din DB)
+    const { data: scriptRow, error: scriptErr } = await supabase
+      .from("presenter_scripts")
+      .select("id, version")
+      .eq("presenter_id", presenterId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    const { data: job, error } = await supabase
+    if (scriptErr) return NextResponse.json({ error: scriptErr.message }, { status: 500 });
+    if (!scriptRow?.id) {
+      return NextResponse.json(
+        { error: "No script found for presenter. Generate script first." },
+        { status: 400 }
+      );
+    }
+
+    const scriptId = scriptRow.id as string;
+    const scriptVersion = (scriptRow.version ?? 1) as number;
+
+    // 2) creează job
+    const { data: job, error: jobErr } = await supabase
       .from("presenter_video_jobs")
       .insert({
         presenter_id: presenterId,
         script_id: scriptId,
         script_version: scriptVersion,
-        created_by: auth.user.id,
         status: "queued",
         progress: 0,
-        error: null,
-        created_at: now,
-        updated_at: now,
+        created_by: auth.user.id,
       })
-      .select("id,status,progress,created_at,updated_at")
+      .select("id,status,progress,created_at")
       .single();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    if (jobErr) return NextResponse.json({ error: jobErr.message }, { status: 500 });
 
     return NextResponse.json({ ok: true, job }, { status: 200 });
   } catch (e: any) {
