@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
-import { generateVoiceoverForJob } from "@/lib/video/generateVoiceover";
+import { generateVoiceoverForJob } from "../../../lib/video/generateVoiceover";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
