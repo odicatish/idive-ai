@@ -31,35 +31,59 @@ function safeJson(txt: string) {
   }
 }
 
-/**
- * GET = convenience (browser / UI accidental GET) -> rulează același lucru ca POST
- * POST = endpoint “corect” pentru a procesa 1 job queued
- */
+function getOrigin(req: Request) {
+  try {
+    const url = new URL(req.url);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return "";
+  }
+}
+
 export async function GET(req: Request) {
-  return run(req);
+  // Debug-friendly endpoint. Browser navigation is GET, so we return instructions.
+  const origin = getOrigin(req);
+  return NextResponse.json(
+    {
+      ok: true,
+      route: "/api/video-jobs/run-worker",
+      message:
+        "Use POST to run one worker tick (server-side call to /api/video-worker with secret).",
+      howToTest: origin
+        ? {
+            curl: `curl -X POST "${origin}/api/video-jobs/run-worker" -H "Content-Type: application/json"`,
+          }
+        : { curl: `curl -X POST "/api/video-jobs/run-worker"` },
+      note:
+        "POST requires you to be logged in (uses your Supabase session cookie). If not authenticated it returns 401.",
+    },
+    { status: 200 }
+  );
 }
 
 export async function POST(req: Request) {
-  return run(req);
-}
-
-async function run(req: Request) {
   try {
     const supabase = await getSupabase();
 
+    // Must be a logged-in user (session cookie)
     const { data: auth, error: authError } = await supabase.auth.getUser();
     if (authError || !auth?.user) {
-      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
+      return NextResponse.json({ ok: false, error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
 
     const secret = (process.env.VIDEO_WORKER_SECRET || "").trim();
     if (!secret) {
-      return NextResponse.json({ error: "Missing VIDEO_WORKER_SECRET" }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "Missing VIDEO_WORKER_SECRET" },
+        { status: 500 }
+      );
     }
 
-    // rulează worker-ul în același deploy, server-side (nu expui secret către client)
-    const url = new URL(req.url);
-    const origin = `${url.protocol}//${url.host}`;
+    // Run worker on the same deploy, server-side (we do NOT expose secret to client)
+    const origin = getOrigin(req);
+    if (!origin) {
+      return NextResponse.json({ ok: false, error: "Could not resolve origin" }, { status: 500 });
+    }
 
     const r = await fetch(`${origin}/api/video-worker?secret=${encodeURIComponent(secret)}`, {
       method: "POST",
@@ -68,11 +92,21 @@ async function run(req: Request) {
     });
 
     const txt = await r.text().catch(() => "");
+
+    // Always return 200 so UI can handle it easily; include worker status inside payload
     return NextResponse.json(
-      { ok: r.ok, status: r.status, body: txt ? safeJson(txt) : null },
+      {
+        ok: true,
+        status: r.status,
+        body: txt ? safeJson(txt) : null,
+      },
       { status: 200 }
     );
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "unknown_error" }, { status: 500 });
+    console.error("RUN_WORKER_ERROR", e);
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "unknown_error" },
+      { status: 500 }
+    );
   }
 }
