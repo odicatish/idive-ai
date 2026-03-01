@@ -7,6 +7,8 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const EXPORT_BUCKET = "exports";
+
 type ExportRow = {
   id: string;
   user_id: string;
@@ -16,18 +18,23 @@ type ExportRow = {
   presenter: any;
   prompt: string | null;
   file_path: string | null;
+  file_url?: string | null;
   created_at: string;
   updated_at: string;
 };
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+async function safeJson(res: Response) {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(req: Request) {
   const cookieStore = await cookies();
   const url = new URL(req.url);
-  const jobId = url.searchParams.get("jobId");
+  const jobId = (url.searchParams.get("jobId") || "").trim();
 
   if (!jobId) {
     return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
@@ -54,7 +61,7 @@ export async function GET(req: Request) {
   }
   const userId = auth.user.id;
 
-  // read job (RLS ensures user sees only own, but we also filter)
+  // read job (user client; RLS + filter)
   const { data, error } = await supabase
     .from("exports")
     .select("*")
@@ -67,102 +74,118 @@ export async function GET(req: Request) {
 
   let job = data as ExportRow;
 
-  // If queued/processing => simulate progress based on time since created_at
-  if (job.status === "queued" || job.status === "processing") {
-    const createdMs = new Date(job.created_at).getTime();
-    const nowMs = Date.now();
-    const elapsed = nowMs - createdMs;
+  // If job needs processing, do the real work now (idempotent-ish)
+  const needsWork =
+    (job.status === "queued" || job.status === "processing") && !job.file_path && job.error == null;
 
-    // ~12s to finish (tweak how you like)
-    const pct = clamp(Math.floor((elapsed / 12000) * 100), 0, 100);
-
-    // move to processing early
-    const nextStatus: ExportRow["status"] = pct >= 100 ? "completed" : "processing";
-
-    // update progress/status using service role (since RLS blocks updates)
+  if (needsWork) {
+    // mark processing (best-effort)
     await supabaseAdmin
       .from("exports")
-      .update({ status: nextStatus, progress: pct })
+      .update({ status: "processing", progress: 20, error: null })
       .eq("id", job.id)
       .eq("user_id", userId);
 
-    // reload job from admin to get latest fields
-    const { data: refreshed } = await supabaseAdmin
-      .from("exports")
-      .select("*")
-      .eq("id", job.id)
-      .eq("user_id", userId)
-      .single();
+    try {
+      const presenter = job.presenter ?? {};
+      const presenterId = typeof presenter?.id === "string" ? presenter.id : null;
 
-    job = refreshed as ExportRow;
+      // load latest script (source of truth)
+      let scriptContent: string | null = null;
+      if (presenterId) {
+        const { data: scriptRow } = await supabaseAdmin
+          .from("presenter_scripts")
+          .select("content")
+          .eq("presenter_id", presenterId)
+          .maybeSingle();
 
-    // on completion, upload “artifact” once
-    if (job.status === "completed" && !job.file_path) {
-      const filePath = `${userId}/${job.id}/export-${Date.now()}.json`;
+        scriptContent = (scriptRow?.content ?? null) as any;
+      }
 
+      // build package
       const exportPackage = {
         exported_at: new Date().toISOString(),
         user_id: userId,
         job_id: job.id,
         prompt: job.prompt ?? null,
-        presenter: job.presenter,
+        presenter: {
+          ...presenter,
+          id: presenterId,
+          // prefer latest script from presenter_scripts
+          script: scriptContent ?? presenter?.script ?? null,
+        },
       };
 
+      await supabaseAdmin
+        .from("exports")
+        .update({ progress: 55 })
+        .eq("id", job.id)
+        .eq("user_id", userId);
+
+      const filePath = `${userId}/${presenterId ?? "no-presenter"}/${job.id}/export-${Date.now()}.json`;
       const bytes = Buffer.from(JSON.stringify(exportPackage, null, 2), "utf8");
 
-      const uploadRes = await supabaseAdmin.storage
-        .from("exports")
-        .upload(filePath, bytes, {
-          contentType: "application/json",
-          upsert: true,
-        });
+      const uploadRes = await supabaseAdmin.storage.from(EXPORT_BUCKET).upload(filePath, bytes, {
+        contentType: "application/json",
+        upsert: true,
+      });
 
       if (uploadRes.error) {
         await supabaseAdmin
           .from("exports")
-          .update({ status: "failed", error: uploadRes.error.message })
+          .update({ status: "failed", progress: 100, error: uploadRes.error.message })
           .eq("id", job.id)
           .eq("user_id", userId);
 
         return NextResponse.json(
-          { status: "failed", progress: job.progress, error: uploadRes.error.message },
+          { status: "failed", progress: 100, error: uploadRes.error.message, downloadUrl: null },
           { status: 200 }
         );
       }
 
+      // store file_path; keep file_url optional (signed url is short-lived anyway)
       await supabaseAdmin
         .from("exports")
-        .update({ file_path: filePath })
+        .update({ status: "completed", progress: 100, file_path: filePath, error: null })
         .eq("id", job.id)
         .eq("user_id", userId);
 
       // reload
-      const { data: refreshed2 } = await supabaseAdmin
+      const { data: refreshed } = await supabaseAdmin
         .from("exports")
         .select("*")
         .eq("id", job.id)
         .eq("user_id", userId)
         .single();
 
-      job = refreshed2 as ExportRow;
+      job = refreshed as ExportRow;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      await supabaseAdmin
+        .from("exports")
+        .update({ status: "failed", progress: 100, error: msg })
+        .eq("id", job.id)
+        .eq("user_id", userId);
+
+      return NextResponse.json(
+        { status: "failed", progress: 100, error: msg, downloadUrl: null },
+        { status: 200 }
+      );
     }
   }
 
-  // If completed, return a signed download URL (short-lived)
+  // return signed download URL if completed
   let downloadUrl: string | null = null;
   if (job.status === "completed" && job.file_path) {
-    const signed = await supabaseAdmin.storage
-      .from("exports")
-      .createSignedUrl(job.file_path, 60 * 10); // 10 min
-
+    const signed = await supabaseAdmin.storage.from(EXPORT_BUCKET).createSignedUrl(job.file_path, 60 * 10);
     if (!signed.error) downloadUrl = signed.data.signedUrl;
   }
 
   return NextResponse.json(
     {
       status: job.status,
-      progress: job.progress,
-      error: job.error,
+      progress: job.progress ?? 0,
+      error: job.error ?? null,
       downloadUrl,
     },
     { status: 200 }

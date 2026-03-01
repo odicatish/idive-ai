@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,8 +32,8 @@ export async function POST(req: Request) {
 
   const userId = auth.user.id;
 
-  // 2) pro gate
-  const { data: sub, error: subError } = await supabase
+  // 2) pro gate (use admin to avoid RLS edge cases)
+  const { data: sub, error: subError } = await supabaseAdmin
     .from("subscriptions")
     .select("status")
     .eq("user_id", userId)
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing presenter" }, { status: 400 });
   }
 
-  // 4) create job
+  // 4) create job (user client so RLS stays meaningful)
   const { data: job, error: jobError } = await supabase
     .from("exports")
     .insert({

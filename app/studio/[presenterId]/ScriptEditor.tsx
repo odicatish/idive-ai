@@ -1025,8 +1025,7 @@ export default function ScriptEditor({
                   type="button"
                   disabled={status === "offline" || !presenterId}
                 >
-                  Create snapshot
-                </button>
+                  Save snapshot                </button>
 
                 <button
                   onClick={() => setHistoryOpen(false)}
