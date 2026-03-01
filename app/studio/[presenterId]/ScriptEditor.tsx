@@ -69,6 +69,11 @@ function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+function isTerminalJobStatus(s: string) {
+  const v = String(s || "").toLowerCase();
+  return v === "completed" || v === "failed";
+}
+
 export default function ScriptEditor({
   initialScript,
   initialPresenter,
@@ -147,8 +152,22 @@ export default function ScriptEditor({
   const [rendering, setRendering] = useState(false);
   const [renderJob, setRenderJob] = useState<VideoJobDTO | null>(null);
 
-  const checkVideoStatus = async () => {
-    if (!presenterId) return;
+  // ✅ helper: kick worker once (best-effort) so user sees progress immediately
+  const kickWorkerOnce = async () => {
+    try {
+      // allow GET or POST (we made server accept both)
+      await fetch(`/api/video-jobs/run-worker`, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+      }).catch(() => {});
+    } catch {
+      // ignore — cron will still process later
+    }
+  };
+
+  const checkVideoStatus = async (): Promise<VideoJobDTO | null> => {
+    if (!presenterId) return null;
 
     try {
       const res = await fetch(`/api/presenters/${presenterId}/video-status`, {
@@ -157,23 +176,24 @@ export default function ScriptEditor({
         cache: "no-store",
       });
 
-      // If user not logged in / cookie missing etc.
       if (res.status === 401) {
-        // Don't spam error state in UI; just stop polling.
         stopVideoPolling();
-        return;
+        return null;
       }
 
       const payload = await safeJson(res);
 
+      // if no job yet, stop polling quietly
+      if (res.status === 404) {
+        return null;
+      }
+
       if (!res.ok) {
-        // keep polling if transient, but avoid console spam
-        // console.warn("VIDEO_STATUS_NOT_OK", payload);
-        return;
+        return null;
       }
 
       const job: any = payload?.job ?? null;
-      if (!job) return;
+      if (!job) return null;
 
       const normalized: VideoJobDTO = {
         id: String(job.id),
@@ -190,31 +210,31 @@ export default function ScriptEditor({
       setRenderJob(normalized);
 
       // stop polling on terminal states
-      if (normalized.status === "completed" || normalized.status === "failed") {
+      if (isTerminalJobStatus(normalized.status)) {
         stopVideoPolling();
       }
+
+      return normalized;
     } catch (e) {
       console.error("VIDEO_STATUS_THROW", e);
-      // keep polling; could be a temporary network hiccup
+      return null;
     }
   };
 
-  // cleanup polling on unmount / presenter change
+  // cleanup polling on unmount
   useEffect(() => {
     return () => stopVideoPolling();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // if we already have a job (or page re-opened), check once and start polling if needed
+  // hydrate video banner on load, and start polling only if needed (based on returned status)
   useEffect(() => {
     if (!presenterId) return;
 
-    // always check once on load to hydrate banner
-    void checkVideoStatus().then(() => {
-      // if job is running, ensure polling is active
-      const s = renderJob?.status;
-      if (s && s !== "completed" && s !== "failed") startVideoPolling();
-    });
+    void (async () => {
+      const j = await checkVideoStatus();
+      if (j && !isTerminalJobStatus(j.status)) startVideoPolling();
+    })();
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presenterId]);
@@ -240,7 +260,6 @@ export default function ScriptEditor({
 
       setVersions(list);
 
-      // select default: the latest (first in list) if none selected OR selected disappeared
       if (list.length > 0) {
         const stillExists = selectedVersionId ? list.some((v) => v.id === selectedVersionId) : false;
         if (!selectedVersionId || !stillExists) {
@@ -297,11 +316,9 @@ export default function ScriptEditor({
       const data = await safeJson(res);
       const restored = data?.script;
 
-      // Apply immediately in editor
       if (restored?.content != null) {
         suppressNextAutosave.current = true;
 
-        // clear conflict state because server state changed intentionally
         setConflict(null);
         setStatus("idle");
 
@@ -317,11 +334,9 @@ export default function ScriptEditor({
           updatedBy: restored.updatedBy ?? prev.updatedBy,
         }));
 
-        // IMPORTANT: update textarea draft too
         setDraft(restored.content);
       }
 
-      // refresh history list (will show restore snapshot)
       await loadVersions();
     } catch (e) {
       console.error("RESTORE_UI_THROW", e);
@@ -423,7 +438,6 @@ export default function ScriptEditor({
 
       suppressNextAutosave.current = true;
 
-      // Merge so we don't lose fields if API returns partial
       setScript((prev) => ({
         ...prev,
         ...(data.script ?? {}),
@@ -546,7 +560,6 @@ export default function ScriptEditor({
 
       const payload = await safeJson(res);
 
-      // ✅ if 422, do NOT mark as error (keep idle)
       if (res.status === 422) {
         console.warn("GENERATE_WARN_422", payload);
         setStatus("idle");
@@ -583,7 +596,6 @@ export default function ScriptEditor({
 
       setDraft(next.content);
 
-      // refresh history list so the generated snapshot appears quickly
       if (historyOpen) void loadVersions();
     } catch (e) {
       console.error("GENERATE_THROW", e);
@@ -591,7 +603,7 @@ export default function ScriptEditor({
     }
   };
 
-  // ✅ Render Video (queue job + start polling)
+  // ✅ Render Video (queue job + kick worker + start polling)
   const renderVideo = async () => {
     if (status === "offline") return;
     if (!presenterId) return;
@@ -607,7 +619,6 @@ export default function ScriptEditor({
 
       const payload = await safeJson(res);
 
-      // if script too short, show a soft message but no hard error state
       if (res.status === 422) {
         console.warn("RENDER_WARN_422", payload);
         alert("Script is too short for rendering a video. Add more text and try again.");
@@ -620,18 +631,24 @@ export default function ScriptEditor({
         return;
       }
 
-      // API returns { job: {...} } for queueing
-      if (payload?.job) {
+      // Works for both {existing:true, job:{...}} and {existing:false, job:{...}}
+      const j = payload?.job ?? null;
+      if (j?.id) {
         setRenderJob({
-          id: String(payload.job.id),
-          status: String(payload.job.status ?? "queued"),
-          progress: Number(payload.job.progress ?? 0),
-          createdAt: payload.job.createdAt ?? payload.job.created_at ?? undefined,
+          id: String(j.id),
+          status: String(j.status ?? "queued"),
+          progress: Number(j.progress ?? 0),
+          createdAt: j.createdAt ?? j.created_at ?? undefined,
+          updatedAt: j.updatedAt ?? j.updated_at ?? undefined,
+          videoUrl: j.videoUrl ?? j.video_url ?? null,
+          error: j.error ?? null,
         });
       } else {
-        // still fine; status endpoint will tell us
         setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
       }
+
+      // ✅ kick worker once (best-effort) so user sees movement without waiting cron
+      void kickWorkerOnce();
 
       // start polling immediately
       startVideoPolling();
@@ -653,21 +670,18 @@ export default function ScriptEditor({
 
     setPreviewError("");
 
-    // 1) if list already includes content, use it
     if (typeof selected.content === "string") {
       setPreviewText(selected.content);
       previewCache.current.set(versionId, selected.content);
       return;
     }
 
-    // 2) cache hit
     const cached = previewCache.current.get(versionId);
     if (typeof cached === "string") {
       setPreviewText(cached);
       return;
     }
 
-    // 3) fetch details endpoint
     previewAbortRef.current?.abort();
     const ac = new AbortController();
     previewAbortRef.current = ac;
@@ -731,7 +745,6 @@ export default function ScriptEditor({
     };
   }, [historyOpen, selected, presenterId]);
 
-  // UI helpers
   const statusLabel = (() => {
     if (status === "offline") return "Offline — changes kept locally";
     if (status === "saving") return "Saving…";
@@ -742,7 +755,6 @@ export default function ScriptEditor({
     return dirty ? "Unsaved changes" : "Up to date";
   })();
 
-  // Diff computed (simple line-by-line)
   const diffRows = useMemo(() => {
     const a = normalizeLines(draft);
     const b = normalizeLines(previewText);
@@ -767,7 +779,6 @@ export default function ScriptEditor({
             <div className="text-xs uppercase tracking-widest text-white/50">iDive Studio</div>
             <div className="truncate text-lg font-semibold">{presenter.name}</div>
 
-            {/* ✅ Render job tiny status */}
             {renderJob && (
               <div className="mt-1 text-xs text-purple-300/80">
                 Video job: <span className="text-purple-200">{renderJob.status}</span>{" "}
@@ -823,7 +834,6 @@ export default function ScriptEditor({
               Generate
             </button>
 
-            {/* ✅ Render Video button */}
             <button
               onClick={() => void renderVideo()}
               disabled={rendering || status === "transforming" || status === "offline"}
@@ -999,10 +1009,8 @@ export default function ScriptEditor({
       {/* History Drawer */}
       {historyOpen && (
         <div className="fixed inset-0 z-50">
-          {/* overlay */}
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setHistoryOpen(false)} />
 
-          {/* panel */}
           <div className="absolute right-0 top-0 h-full w-full lg:w-[920px] border-l border-white/10 bg-neutral-950/85 backdrop-blur-xl shadow-[0_30px_120px_rgba(0,0,0,0.7)]">
             <div className="p-5 border-b border-white/10 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -1030,9 +1038,7 @@ export default function ScriptEditor({
               </div>
             </div>
 
-            {/* body split */}
             <div className="h-[calc(100%-76px)] grid grid-cols-1 lg:grid-cols-[360px_1fr]">
-              {/* list */}
               <div className="border-b lg:border-b-0 lg:border-r border-white/10 overflow-auto">
                 <div className="p-4">
                   {versionsLoading ? (
@@ -1091,7 +1097,6 @@ export default function ScriptEditor({
                 </div>
               </div>
 
-              {/* preview */}
               <div className="overflow-auto">
                 <div className="p-5">
                   {!selected ? (
@@ -1203,7 +1208,6 @@ export default function ScriptEditor({
               </div>
             </div>
 
-            {/* Confirm modal */}
             {confirm && (
               <div className="fixed inset-0 z-[60]">
                 <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={() => setConfirm(null)} />

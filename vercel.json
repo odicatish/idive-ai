@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/video-worker?secret=prod_idive",
-      "schedule": "0 3 * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }
