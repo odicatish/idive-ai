@@ -604,62 +604,69 @@ export default function ScriptEditor({
   };
 
   // ✅ Render Video (queue job + kick worker + start polling)
-  const renderVideo = async () => {
-    if (status === "offline") return;
-    if (!presenterId) return;
+  // ✅ Render Video (queue job + kick worker + start polling)
+const renderVideo = async () => {
+  if (status === "offline") return;
+  if (!presenterId) return;
 
-    setRendering(true);
+  setRendering(true);
 
-    try {
-      const res = await fetch(`/api/presenters/${presenterId}/render`, {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-      });
+  try {
+    const res = await fetch(`/api/presenters/${presenterId}/render`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    });
 
-      const payload = await safeJson(res);
+    const payload = await safeJson(res);
 
-      if (res.status === 422) {
-        console.warn("RENDER_WARN_422", payload);
-        alert("Script is too short for rendering a video. Add more text and try again.");
-        return;
-      }
-
-      if (!res.ok) {
-        console.error("RENDER_ERROR", payload);
-        alert(payload?.error ?? "Render failed");
-        return;
-      }
-
-      // Works for both {existing:true, job:{...}} and {existing:false, job:{...}}
-      const j = payload?.job ?? null;
-      if (j?.id) {
-        setRenderJob({
-          id: String(j.id),
-          status: String(j.status ?? "queued"),
-          progress: Number(j.progress ?? 0),
-          createdAt: j.createdAt ?? j.created_at ?? undefined,
-          updatedAt: j.updatedAt ?? j.updated_at ?? undefined,
-          videoUrl: j.videoUrl ?? j.video_url ?? null,
-          error: j.error ?? null,
-        });
-      } else {
-        setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
-      }
-
-      // ✅ kick worker once (best-effort) so user sees movement without waiting cron
-      void kickWorkerOnce();
-
-      // start polling immediately
-      startVideoPolling();
-    } catch (e) {
-      console.error("RENDER_THROW", e);
-      alert("Render failed (network error).");
-    } finally {
-      setRendering(false);
+    // if script too short, show a soft message but no hard error state
+    if (res.status === 422) {
+      console.warn("RENDER_WARN_422", payload);
+      alert("Script is too short for rendering a video. Add more text and try again.");
+      return;
     }
-  };
 
+    if (!res.ok) {
+      console.error("RENDER_ERROR", payload);
+      alert(payload?.error ?? "Render failed");
+      return;
+    }
+
+    // API returns { job: {...} } for queueing
+    if (payload?.job) {
+      setRenderJob({
+        id: String(payload.job.id),
+        status: String(payload.job.status ?? "queued"),
+        progress: Number(payload.job.progress ?? 0),
+        createdAt: payload.job.createdAt ?? payload.job.created_at ?? undefined,
+      });
+    } else {
+      setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
+    }
+
+    // ✅ Kick worker (fire-and-forget). This does NOT expose the secret.
+    // It runs server-side and processes one queued job.
+    fetch(`/api/video-jobs/run-worker`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+    })
+      .then(async (r) => {
+        const txt = await r.text().catch(() => "");
+        if (!r.ok) console.warn("RUN_WORKER_NOT_OK", r.status, txt);
+      })
+      .catch((e) => console.warn("RUN_WORKER_THROW", e));
+
+    // start polling immediately
+    startVideoPolling();
+  } catch (e) {
+    console.error("RENDER_THROW", e);
+    alert("Render failed (network error).");
+  } finally {
+    setRendering(false);
+  }
+};
   // ✅ Fetch preview content for selected version
   useEffect(() => {
     if (!historyOpen) return;
