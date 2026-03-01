@@ -31,82 +31,49 @@ function safeJson(txt: string) {
   }
 }
 
-function getOrigin(req: Request) {
-  try {
-    const url = new URL(req.url);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return "";
-  }
-}
-
 export async function GET(req: Request) {
-  // Debug-friendly endpoint. Browser navigation is GET, so we return instructions.
-  const origin = getOrigin(req);
-  return NextResponse.json(
-    {
-      ok: true,
-      route: "/api/video-jobs/run-worker",
-      message:
-        "Use POST to run one worker tick (server-side call to /api/video-worker with secret).",
-      howToTest: origin
-        ? {
-            curl: `curl -X POST "${origin}/api/video-jobs/run-worker" -H "Content-Type: application/json"`,
-          }
-        : { curl: `curl -X POST "/api/video-jobs/run-worker"` },
-      note:
-        "POST requires you to be logged in (uses your Supabase session cookie). If not authenticated it returns 401.",
-    },
-    { status: 200 }
-  );
+  // GET = debug/health (browser-friendly). Nu rulează worker.
+  const hasSecret = !!process.env.VIDEO_WORKER_SECRET;
+  return NextResponse.json({
+    ok: true,
+    route: "/api/video-jobs/run-worker",
+    methods: ["POST"],
+    hasWorkerSecret: hasSecret,
+    message:
+      "Use POST to run one queued video job server-side (requires auth). GET is only a health/debug response.",
+  });
 }
 
 export async function POST(req: Request) {
   try {
     const supabase = await getSupabase();
 
-    // Must be a logged-in user (session cookie)
+    // Auth required (ca să nu poată oricine să-ți ruleze worker-ul)
     const { data: auth, error: authError } = await supabase.auth.getUser();
     if (authError || !auth?.user) {
-      return NextResponse.json({ ok: false, error: "NOT_AUTHENTICATED" }, { status: 401 });
+      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
 
     const secret = (process.env.VIDEO_WORKER_SECRET || "").trim();
     if (!secret) {
-      return NextResponse.json(
-        { ok: false, error: "Missing VIDEO_WORKER_SECRET" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Missing VIDEO_WORKER_SECRET" }, { status: 500 });
     }
 
-    // Run worker on the same deploy, server-side (we do NOT expose secret to client)
-    const origin = getOrigin(req);
-    if (!origin) {
-      return NextResponse.json({ ok: false, error: "Could not resolve origin" }, { status: 500 });
-    }
+    // Rulează worker-ul pe același origin, dar server-side (nu expui secret în client)
+    const url = new URL(req.url);
+    const origin = `${url.protocol}//${url.host}`;
 
     const r = await fetch(`${origin}/api/video-worker?secret=${encodeURIComponent(secret)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      cache: "no-store",
     });
 
     const txt = await r.text().catch(() => "");
-
-    // Always return 200 so UI can handle it easily; include worker status inside payload
     return NextResponse.json(
-      {
-        ok: true,
-        status: r.status,
-        body: txt ? safeJson(txt) : null,
-      },
+      { ok: r.ok, status: r.status, body: txt ? safeJson(txt) : null },
       { status: 200 }
     );
   } catch (e: any) {
-    console.error("RUN_WORKER_ERROR", e);
-    return NextResponse.json(
-      { ok: false, error: e?.message ?? "unknown_error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message ?? "unknown_error" }, { status: 500 });
   }
 }
