@@ -2,12 +2,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import { generateVoiceoverForJob } from "@/lib/video/generateVoiceover";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function jsonError(status: number, error: string, details?: any) {
-  return NextResponse.json({ ok: false, error, ...(details ? { details } : {}) }, { status });
+  return NextResponse.json(
+    { ok: false, error, ...(details ? { details } : {}) },
+    { status }
+  );
 }
 
 function timingSafeEqual(a: string, b: string) {
@@ -33,27 +37,97 @@ function getSecret(req: Request) {
   return bearer || headerAlt || qp || "";
 }
 
-function supabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url) throw new Error("Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL");
-  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-
-  return createClient(url, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+function getExpectedSecret() {
+  return (process.env.VIDEO_WORKER_SECRET || "").trim();
 }
 
-function getExpectedSecret() {
-  // IMPORTANT: în prod, set VIDEO_WORKER_SECRET obligatoriu.
-  // Dacă nu e setat, refuzăm request-ul (mai sigur decât un default hardcodat).
-  const expected = (process.env.VIDEO_WORKER_SECRET || "").trim();
-  return expected;
+/**
+ * IMPORTANT:
+ * Worker-ul trebuie să folosească SUPABASE_URL (server-side).
+ * Am păstrat fallback, dar îți arătăm în răspuns ce URL a fost folosit.
+ */
+function supabaseAdmin() {
+  const usedUrl =
+    (process.env.SUPABASE_URL || "").trim() ||
+    (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  if (!usedUrl) throw new Error("Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL");
+  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+
+  const client = createClient(usedUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  // Supabase project ref e subdomeniul din https://<ref>.supabase.co
+  const projectRef = (() => {
+    try {
+      const u = new URL(usedUrl);
+      const host = u.hostname; // <ref>.supabase.co
+      return host.split(".")[0] || null;
+    } catch {
+      return null;
+    }
+  })();
+
+  return { client, usedUrl, projectRef };
+}
+
+async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
+  const nowIso = new Date().toISOString();
+
+  // upsert pipeline job linked to legacy job
+  const payload = {
+    legacy_job_id: legacyJob.id,
+    presenter_id: legacyJob.presenter_id,
+    script_id: legacyJob.script_id,
+    script_version: legacyJob.script_version,
+    user_id: legacyJob.created_by,
+    status: "processing",
+    progress: legacyJob.progress ?? 0,
+    updated_at: nowIso,
+  };
+
+  const { error: upsertErr } = await supabase
+    .from("video_render_jobs")
+    .upsert(payload, { onConflict: "legacy_job_id" });
+
+  if (upsertErr) throw new Error(`pipeline_upsert_failed: ${upsertErr.message}`);
+
+  const { data: pipelineJob, error: fetchErr } = await supabase
+    .from("video_render_jobs")
+    .select("id")
+    .eq("legacy_job_id", legacyJob.id)
+    .maybeSingle();
+
+  if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
+  if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
+
+  // best-effort seed steps (daca ai functia)
+  try {
+    await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
+  } catch {}
+
+  return pipelineJob.id as string;
+}
+
+async function canRunVoiceover(supabase: any, pipelineJobId: string) {
+  const { data: steps, error } = await supabase
+    .from("video_render_steps")
+    .select("step,status")
+    .eq("job_id", pipelineJobId);
+
+  if (error) throw new Error(`steps_fetch_failed: ${error.message}`);
+  if (!steps) return false;
+
+  const storyboard = steps.find((s: any) => s.step === "storyboard");
+  const voiceover = steps.find((s: any) => s.step === "voiceover");
+  return storyboard?.status === "completed" && voiceover?.status === "queued";
 }
 
 export async function GET(req: Request) {
-  // GET = healthcheck public (NU cere secret)
+  // GET = healthcheck public (NU procesează job-uri)
   const secret = getSecret(req);
   const expected = getExpectedSecret();
 
@@ -75,14 +149,13 @@ export async function POST(req: Request) {
     if (!expected) {
       return jsonError(500, "worker_secret_missing", "Set VIDEO_WORKER_SECRET in env.");
     }
-
     if (!secret || !timingSafeEqual(secret, expected)) {
       return jsonError(401, "unauthorized_worker");
     }
 
-    const supabase = supabaseAdmin();
+    const { client: supabase, usedUrl, projectRef } = supabaseAdmin();
 
-    // 1) pick next queued job
+    // 1) pick next queued legacy job
     const { data: job, error: pickErr } = await supabase
       .from("presenter_video_jobs")
       .select("*")
@@ -91,15 +164,20 @@ export async function POST(req: Request) {
       .limit(1)
       .maybeSingle();
 
-    if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
+    if (pickErr) return jsonError(500, "job_pick_failed", { message: pickErr.message, usedUrl, projectRef });
 
     if (!job) {
-      return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
+      return NextResponse.json({
+        ok: true,
+        didWork: false,
+        message: "No queued jobs.",
+        debug: { usedUrl, projectRef },
+      });
     }
 
     const nowIso = new Date().toISOString();
 
-    // 2) atomic lock: update only if still queued
+    // 2) atomic lock
     const { data: locked, error: lockErr } = await supabase
       .from("presenter_video_jobs")
       .update({
@@ -110,62 +188,115 @@ export async function POST(req: Request) {
       })
       .eq("id", job.id)
       .eq("status", "queued")
-      .select("id,status,progress,presenter_id")
+      .select("id,status,progress,presenter_id,script_id,script_version,created_by")
       .maybeSingle();
 
-    if (lockErr) return jsonError(500, "job_lock_failed", lockErr.message);
+    if (lockErr) return jsonError(500, "job_lock_failed", { message: lockErr.message, usedUrl, projectRef });
 
-    // if someone else already took it
     if (!locked) {
       return NextResponse.json({
         ok: true,
         didWork: false,
         message: "Job was already taken by another worker run.",
+        debug: { usedUrl, projectRef },
       });
     }
 
-    // mock pipeline (best-effort progress updates)
-    await new Promise((r) => setTimeout(r, 400));
+    // 3) ensure pipeline job exists
+    let pipelineJobId: string | null = null;
+    try {
+      pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
+    } catch (e: any) {
+      console.error("PIPELINE_LINK_ERROR", e?.message ?? e);
+      await supabase
+        .from("presenter_video_jobs")
+        .update({
+          error: `pipeline_link_error: ${e?.message ?? String(e)}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+    }
+
+    // 4) try voiceover if eligible
+    let voiceoverRan = false;
+    if (pipelineJobId) {
+      try {
+        const okToRun = await canRunVoiceover(supabase, pipelineJobId);
+        if (okToRun) {
+          await generateVoiceoverForJob(pipelineJobId);
+          voiceoverRan = true;
+
+          await supabase
+            .from("presenter_video_jobs")
+            .update({ progress: 20, updated_at: new Date().toISOString() })
+            .eq("id", job.id);
+        }
+      } catch (e: any) {
+        console.error("VOICEOVER_ERROR", e?.message ?? e);
+        try {
+          await supabase
+            .from("video_render_steps")
+            .update({
+              status: "failed",
+              error_message: e?.message ?? String(e),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("job_id", pipelineJobId)
+            .eq("step", "voiceover");
+        } catch {}
+        await supabase
+          .from("presenter_video_jobs")
+          .update({
+            error: `voiceover_error: ${e?.message ?? String(e)}`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+      }
+    }
+
+    // 5) keep existing mock progress (so UI still works)
+    await new Promise((r) => setTimeout(r, 250));
     await supabase
       .from("presenter_video_jobs")
       .update({ progress: 25, updated_at: new Date().toISOString() })
       .eq("id", job.id);
 
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 250));
     await supabase
       .from("presenter_video_jobs")
       .update({ progress: 55, updated_at: new Date().toISOString() })
       .eq("id", job.id);
 
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 250));
     await supabase
       .from("presenter_video_jobs")
       .update({ progress: 85, updated_at: new Date().toISOString() })
       .eq("id", job.id);
 
-    await new Promise((r) => setTimeout(r, 400));
-
     const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
 
-    // 3) complete
+    // 6) complete legacy job
     const { error: doneErr } = await supabase
       .from("presenter_video_jobs")
       .update({
         status: "completed",
         progress: 100,
         video_url: fakeUrl,
-        provider: "mock",
+        provider: voiceoverRan ? "mock+openai-tts" : "mock",
         provider_job_id: String(job.id),
         updated_at: new Date().toISOString(),
       })
       .eq("id", job.id);
 
-    if (doneErr) return jsonError(500, "job_complete_failed", doneErr.message);
+    if (doneErr) return jsonError(500, "job_complete_failed", { message: doneErr.message, usedUrl, projectRef });
 
     return NextResponse.json({
       ok: true,
       didWork: true,
+      ranVoiceover: voiceoverRan,
+      pipelineJobId,
       job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
+      debug: { usedUrl, projectRef },
     });
   } catch (e: any) {
     console.error("VIDEO_WORKER_ERROR", e);
