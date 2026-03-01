@@ -42,42 +42,52 @@ function getExpectedSecret() {
 }
 
 /**
- * IMPORTANT:
- * Worker-ul trebuie să folosească SUPABASE_URL (server-side).
- * Am păstrat fallback, dar îți arătăm în răspuns ce URL a fost folosit.
+ * SAFE Supabase Admin (NU aruncă throw).
+ * Dacă lipsesc env-urile, întoarce ok:false și detalii.
+ * Asta previne crash la build în Vercel ("Failed to collect page data").
  */
-function supabaseAdmin() {
+function supabaseAdminSafe() {
   const usedUrl =
     (process.env.SUPABASE_URL || "").trim() ||
     (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
 
   const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
-  if (!usedUrl) throw new Error("Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL");
-  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  if (!usedUrl || !serviceKey) {
+    return {
+      ok: false as const,
+      error: "missing_supabase_env",
+      details: {
+        has_SUPABASE_URL: !!(process.env.SUPABASE_URL || "").trim(),
+        has_NEXT_PUBLIC_SUPABASE_URL: !!(process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim(),
+        has_SUPABASE_SERVICE_ROLE_KEY: !!(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim(),
+      },
+      client: null as any,
+      usedUrl,
+      projectRef: null as string | null,
+    };
+  }
 
   const client = createClient(usedUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Supabase project ref e subdomeniul din https://<ref>.supabase.co
   const projectRef = (() => {
     try {
       const u = new URL(usedUrl);
-      const host = u.hostname; // <ref>.supabase.co
+      const host = u.hostname;
       return host.split(".")[0] || null;
     } catch {
       return null;
     }
   })();
 
-  return { client, usedUrl, projectRef };
+  return { ok: true as const, client, usedUrl, projectRef };
 }
 
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   const nowIso = new Date().toISOString();
 
-  // upsert pipeline job linked to legacy job
   const payload = {
     legacy_job_id: legacyJob.id,
     presenter_id: legacyJob.presenter_id,
@@ -104,7 +114,6 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // best-effort seed steps (daca ai functia)
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
@@ -127,9 +136,11 @@ async function canRunVoiceover(supabase: any, pipelineJobId: string) {
 }
 
 export async function GET(req: Request) {
-  // GET = healthcheck public (NU procesează job-uri)
   const secret = getSecret(req);
   const expected = getExpectedSecret();
+
+  // OPTIONAL: arătăm și dacă env-urile supabase sunt prezente (fără a da valori)
+  const sb = supabaseAdminSafe();
 
   return NextResponse.json({
     ok: true,
@@ -137,6 +148,8 @@ export async function GET(req: Request) {
     hasSecret: !!secret,
     secretConfigured: !!expected,
     secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
+    supabaseEnvOk: sb.ok,
+    supabaseEnv: !sb.ok ? sb.details : undefined,
     message: "POST will process one queued job (requires secret).",
   });
 }
@@ -153,7 +166,14 @@ export async function POST(req: Request) {
       return jsonError(401, "unauthorized_worker");
     }
 
-    const { client: supabase, usedUrl, projectRef } = supabaseAdmin();
+    const sb = supabaseAdminSafe();
+    if (!sb.ok) {
+      return jsonError(500, sb.error, sb.details);
+    }
+
+    const supabase = sb.client;
+    const usedUrl = sb.usedUrl;
+    const projectRef = sb.projectRef;
 
     // 1) pick next queued legacy job
     const { data: job, error: pickErr } = await supabase
@@ -164,7 +184,13 @@ export async function POST(req: Request) {
       .limit(1)
       .maybeSingle();
 
-    if (pickErr) return jsonError(500, "job_pick_failed", { message: pickErr.message, usedUrl, projectRef });
+    if (pickErr) {
+      return jsonError(500, "job_pick_failed", {
+        message: pickErr.message,
+        usedUrl,
+        projectRef,
+      });
+    }
 
     if (!job) {
       return NextResponse.json({
@@ -191,7 +217,13 @@ export async function POST(req: Request) {
       .select("id,status,progress,presenter_id,script_id,script_version,created_by")
       .maybeSingle();
 
-    if (lockErr) return jsonError(500, "job_lock_failed", { message: lockErr.message, usedUrl, projectRef });
+    if (lockErr) {
+      return jsonError(500, "job_lock_failed", {
+        message: lockErr.message,
+        usedUrl,
+        projectRef,
+      });
+    }
 
     if (!locked) {
       return NextResponse.json({
@@ -244,6 +276,7 @@ export async function POST(req: Request) {
             .eq("job_id", pipelineJobId)
             .eq("step", "voiceover");
         } catch {}
+
         await supabase
           .from("presenter_video_jobs")
           .update({
@@ -288,7 +321,13 @@ export async function POST(req: Request) {
       })
       .eq("id", job.id);
 
-    if (doneErr) return jsonError(500, "job_complete_failed", { message: doneErr.message, usedUrl, projectRef });
+    if (doneErr) {
+      return jsonError(500, "job_complete_failed", {
+        message: doneErr.message,
+        usedUrl,
+        projectRef,
+      });
+    }
 
     return NextResponse.json({
       ok: true,
