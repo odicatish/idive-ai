@@ -831,7 +831,7 @@ export default function ScriptEditor({
               )}
               type="button"
             >
-              Generate
+              Generate Text
             </button>
 
             <button
