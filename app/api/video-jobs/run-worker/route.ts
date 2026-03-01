@@ -23,43 +23,73 @@ async function getSupabase() {
   });
 }
 
-export async function POST(req: Request) {
-  try {
-    const supabase = await getSupabase();
-
-    const { data: auth, error: authError } = await supabase.auth.getUser();
-    if (authError || !auth?.user) {
-      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
-    }
-
-    const secret = process.env.VIDEO_WORKER_SECRET;
-    if (!secret) {
-      return NextResponse.json({ error: "Missing VIDEO_WORKER_SECRET" }, { status: 500 });
-    }
-
-    // rulează același deploy, dar server-side (nu expui secret)
-    const url = new URL(req.url);
-    const origin = `${url.protocol}//${url.host}`;
-
-    const r = await fetch(`${origin}/api/video-worker?secret=${encodeURIComponent(secret)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-
-    const txt = await r.text().catch(() => "");
-    return NextResponse.json(
-      { ok: r.ok, status: r.status, body: txt ? safeJson(txt) : null },
-      { status: 200 }
-    );
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "unknown_error" }, { status: 500 });
-  }
-}
-
 function safeJson(txt: string) {
   try {
     return JSON.parse(txt);
   } catch {
     return txt;
+  }
+}
+
+function getOrigin(req: Request) {
+  // Vercel/Next: prefer forwarded headers
+  const proto =
+    req.headers.get("x-forwarded-proto") ||
+    new URL(req.url).protocol.replace(":", "");
+
+  const host =
+    req.headers.get("x-forwarded-host") ||
+    req.headers.get("host") ||
+    new URL(req.url).host;
+
+  return `${proto}://${host}`;
+}
+
+async function runWorker(req: Request) {
+  const supabase = await getSupabase();
+
+  const { data: auth, error: authError } = await supabase.auth.getUser();
+  if (authError || !auth?.user) {
+    return NextResponse.json({ ok: false, error: "NOT_AUTHENTICATED" }, { status: 401 });
+  }
+
+  const secret = (process.env.VIDEO_WORKER_SECRET || "").trim();
+  if (!secret) {
+    return NextResponse.json(
+      { ok: false, error: "Missing VIDEO_WORKER_SECRET" },
+      { status: 500 }
+    );
+  }
+
+  // rulează worker-ul pe același origin (server-side), fără să expui secretul în client
+  const origin = getOrigin(req);
+
+  const r = await fetch(`${origin}/api/video-worker?secret=${encodeURIComponent(secret)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+  });
+
+  const txt = await r.text().catch(() => "");
+  return NextResponse.json(
+    { ok: r.ok, status: r.status, body: txt ? safeJson(txt) : null },
+    { status: 200 }
+  );
+}
+
+// ✅ Acceptăm și GET (pt test în browser / dacă UI cheamă greșit)
+export async function GET(req: Request) {
+  try {
+    return await runWorker(req);
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message ?? "unknown_error" }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    return await runWorker(req);
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message ?? "unknown_error" }, { status: 500 });
   }
 }
