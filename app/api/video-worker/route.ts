@@ -59,8 +59,12 @@ function supabaseAdminSafe() {
       error: "missing_supabase_env",
       details: {
         has_SUPABASE_URL: !!(process.env.SUPABASE_URL || "").trim(),
-        has_NEXT_PUBLIC_SUPABASE_URL: !!(process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim(),
-        has_SUPABASE_SERVICE_ROLE_KEY: !!(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim(),
+        has_NEXT_PUBLIC_SUPABASE_URL: !!(
+          process.env.NEXT_PUBLIC_SUPABASE_URL || ""
+        ).trim(),
+        has_SUPABASE_SERVICE_ROLE_KEY: !!(
+          process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+        ).trim(),
       },
       client: null as any,
       usedUrl,
@@ -83,6 +87,98 @@ function supabaseAdminSafe() {
   })();
 
   return { ok: true as const, client, usedUrl, projectRef };
+}
+
+/**
+ * PIPELINE-FIRST: găsește un job pipeline eligibil pentru voiceover:
+ * - voiceover = queued
+ * - storyboard = completed
+ */
+async function pickPipelineJobForVoiceover(supabase: any) {
+  const { data: voiceRows, error: vErr } = await supabase
+    .from("video_render_steps")
+    .select("job_id")
+    .eq("step", "voiceover")
+    .eq("status", "queued")
+    .limit(25);
+
+  if (vErr) throw new Error(`pick_voiceover_steps_failed: ${vErr.message}`);
+  if (!voiceRows || voiceRows.length === 0) return null;
+
+  for (const row of voiceRows) {
+    const { data: sb, error: sbErr } = await supabase
+      .from("video_render_steps")
+      .select("status")
+      .eq("job_id", row.job_id)
+      .eq("step", "storyboard")
+      .maybeSingle();
+
+    if (sbErr) continue;
+    if (sb?.status === "completed") return row.job_id as string;
+  }
+
+  return null;
+}
+
+/**
+ * Rulează voiceover pentru un pipeline job dacă există unul eligibil.
+ * Returnează jobId dacă a făcut work, altfel null.
+ */
+async function runPipelineVoiceoverIfAny(supabase: any) {
+  const jobId = await pickPipelineJobForVoiceover(supabase);
+  if (!jobId) return null;
+
+  const nowIso = new Date().toISOString();
+
+  // lock step: voiceover queued -> processing
+  const { data: lockedStep, error: lockErr } = await supabase
+    .from("video_render_steps")
+    .update({
+      status: "processing",
+      progress: 5,
+      started_at: nowIso,
+      updated_at: nowIso,
+      error_message: null,
+    })
+    .eq("job_id", jobId)
+    .eq("step", "voiceover")
+    .eq("status", "queued")
+    .select("job_id, step, status")
+    .maybeSingle();
+
+  // dacă alt worker a luat deja, nu facem nimic
+  if (lockErr) throw new Error(`voiceover_lock_failed: ${lockErr.message}`);
+  if (!lockedStep) return null;
+
+  try {
+    await generateVoiceoverForJob(jobId);
+
+    await supabase
+      .from("video_render_steps")
+      .update({
+        status: "completed",
+        progress: 100,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId)
+      .eq("step", "voiceover");
+
+    return jobId;
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+    await supabase
+      .from("video_render_steps")
+      .update({
+        status: "failed",
+        error_message: msg,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId)
+      .eq("step", "voiceover");
+
+    throw e;
+  }
 }
 
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
@@ -139,7 +235,6 @@ export async function GET(req: Request) {
   const secret = getSecret(req);
   const expected = getExpectedSecret();
 
-  // OPTIONAL: arătăm și dacă env-urile supabase sunt prezente (fără a da valori)
   const sb = supabaseAdminSafe();
 
   return NextResponse.json({
@@ -167,13 +262,27 @@ export async function POST(req: Request) {
     }
 
     const sb = supabaseAdminSafe();
-    if (!sb.ok) {
-      return jsonError(500, sb.error, sb.details);
-    }
+    if (!sb.ok) return jsonError(500, sb.error, sb.details);
 
     const supabase = sb.client;
     const usedUrl = sb.usedUrl;
     const projectRef = sb.projectRef;
+
+    // 0) PIPELINE-FIRST voiceover (NU depinde de legacy job)
+    try {
+      const pipelineJobId = await runPipelineVoiceoverIfAny(supabase);
+      if (pipelineJobId) {
+        return NextResponse.json({
+          ok: true,
+          didWork: true,
+          ran: "pipeline_voiceover",
+          pipelineJobId,
+          debug: { usedUrl, projectRef },
+        });
+      }
+    } catch (e: any) {
+      return jsonError(500, "pipeline_voiceover_failed", e?.message ?? String(e));
+    }
 
     // 1) pick next queued legacy job
     const { data: job, error: pickErr } = await supabase
@@ -234,7 +343,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 3) ensure pipeline job exists
+    // 3) ensure pipeline job exists (best-effort)
     let pipelineJobId: string | null = null;
     try {
       pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
@@ -249,7 +358,7 @@ export async function POST(req: Request) {
         .eq("id", job.id);
     }
 
-    // 4) try voiceover if eligible
+    // 4) try voiceover if eligible (legacy-linked)
     let voiceoverRan = false;
     if (pipelineJobId) {
       try {

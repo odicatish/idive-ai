@@ -1,43 +1,63 @@
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
+function getSupabaseAdmin() {
+  const url =
+    (process.env.SUPABASE_URL || "").trim() ||
+    (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+
+  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  if (!url) throw new Error("Missing SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL");
+  if (!key) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // IMPORTANT: service role
-);
-
 export async function generateVoiceoverForJob(jobId: string) {
+  const supabase = getSupabaseAdmin();
+  const nowIso = new Date().toISOString();
 
-  // 1️⃣ get job
-  const { data: job } = await supabase
+  // 1) get job
+  const { data: job, error: jobErr } = await supabase
     .from("video_render_jobs")
     .select("*")
     .eq("id", jobId)
     .single();
 
+  if (jobErr) throw new Error(`Job fetch failed: ${jobErr.message}`);
   if (!job) throw new Error("Job not found");
 
-  // 2️⃣ get script
-  const { data: script } = await supabase
+  // 2) get script
+  const { data: script, error: scriptErr } = await supabase
     .from("presenter_scripts")
     .select("content, language")
     .eq("id", job.script_id)
     .single();
 
+  if (scriptErr) throw new Error(`Script fetch failed: ${scriptErr.message}`);
   if (!script) throw new Error("Script not found");
 
-  // 3️⃣ mark step processing
+  // 3) mark step processing
   await supabase
     .from("video_render_steps")
-    .update({ status: "processing", started_at: new Date().toISOString() })
+    .update({
+      status: "processing",
+      progress: 10,
+      started_at: nowIso,
+      updated_at: nowIso,
+      error_message: null,
+    })
     .eq("job_id", jobId)
     .eq("step", "voiceover");
 
-  // 4️⃣ generate TTS
+  // 4) generate TTS
   const speech = await openai.audio.speech.create({
     model: "gpt-4o-mini-tts",
     voice: "alloy",
@@ -46,7 +66,7 @@ export async function generateVoiceoverForJob(jobId: string) {
 
   const buffer = Buffer.from(await speech.arrayBuffer());
 
-  // 5️⃣ upload to storage
+  // 5) upload to storage
   const path = `voiceovers/${jobId}.mp3`;
 
   const { error: uploadError } = await supabase.storage
@@ -56,15 +76,17 @@ export async function generateVoiceoverForJob(jobId: string) {
       upsert: true,
     });
 
-  if (uploadError) throw uploadError;
+  if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
 
-  // 6️⃣ get public url (signed)
-  const { data: signed } = await supabase.storage
+  // 6) signed url
+  const { data: signed, error: signedErr } = await supabase.storage
     .from("renders")
     .createSignedUrl(path, 60 * 60 * 24 * 7);
 
-  // 7️⃣ create asset
-  await supabase.from("video_assets").insert({
+  if (signedErr) throw new Error(`Signed URL failed: ${signedErr.message}`);
+
+  // 7) create asset
+  const { error: assetErr } = await supabase.from("video_assets").insert({
     job_id: jobId,
     asset_type: "audio_voice",
     provider: "openai",
@@ -74,13 +96,16 @@ export async function generateVoiceoverForJob(jobId: string) {
     public_url: signed?.signedUrl,
   });
 
-  // 8️⃣ complete step
+  if (assetErr) throw new Error(`Asset insert failed: ${assetErr.message}`);
+
+  // 8) complete step
   await supabase
     .from("video_render_steps")
     .update({
       status: "completed",
       progress: 100,
       completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
     .eq("job_id", jobId)
     .eq("step", "voiceover");
