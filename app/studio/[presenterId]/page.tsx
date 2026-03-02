@@ -1,7 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import ScriptEditor from "./ScriptEditor";
 import { supabaseServer } from "@/lib/supabase/server";
-import RememberPresenter from "./RememberPresenter";
 
 function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -87,9 +86,6 @@ export default async function StudioPage({ params }: { params: Params }) {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
-      {/* ✅ salvează ultimul presenter folosit */}
-      <RememberPresenter presenterId={presenterId} />
-
       <ScriptEditor
         initialPresenter={{
           id: presenter.id,
