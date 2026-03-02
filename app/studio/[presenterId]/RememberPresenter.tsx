@@ -8,7 +8,9 @@ export default function RememberPresenter({ presenterId }: { presenterId: string
   useEffect(() => {
     try {
       localStorage.setItem(LAST_PRESENTER_KEY, presenterId);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [presenterId]);
 
   return null;
