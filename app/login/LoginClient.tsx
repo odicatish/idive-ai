@@ -1,28 +1,102 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-import { useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase-browser";
+
+const LAST_PRESENTER_KEY = "idive:lastPresenterId";
+
+function getLastPresenterId(): string | null {
+  try {
+    return localStorage.getItem(LAST_PRESENTER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setLastPresenterId(id: string) {
+  try {
+    localStorage.setItem(LAST_PRESENTER_KEY, id);
+  } catch {
+    // ignore
+  }
+}
 
 export default function LoginPage() {
   const sp = useSearchParams();
+  const router = useRouter();
+
   const rawError = sp.get("error");
   const errorMsg = rawError ? decodeURIComponent(rawError) : "";
-  const next = sp.get("next") || "/create";
 
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  async function redirectAfterLogin() {
+    const supabase = supabaseBrowser();
+
+    // 1) ultimul folosit
+    const last = getLastPresenterId();
+    if (last) {
+      router.replace(`/studio/${last}`);
+      return;
+    }
+
+    // 2) primul presenter
+    const { data, error } = await supabase
+      .from("presenters")
+      .select("id, created_at")
+      .order("created_at", { ascending: true })
+      .limit(1);
+
+    if (!error) {
+      const first = data?.[0]?.id;
+      if (first) {
+        setLastPresenterId(first);
+        router.replace(`/studio/${first}`);
+        return;
+      }
+    }
+
+    // 3) fallback
+    router.replace("/create");
+  }
+
+  // Dacă userul e deja logat (ex: după callback), redirect automat
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const supabase = supabaseBrowser();
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+
+        if (data.session) {
+          await redirectAfterLogin();
+          return;
+        }
+      } finally {
+        if (!cancelled) setCheckingSession(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const sendMagic = async () => {
     setLoading(true);
     try {
       const supabase = supabaseBrowser();
 
-      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
-        next
-      )}`;
+      // IMPORTANT: trimitem către callback, dar fără să forțăm /create.
+      // După callback, userul ajunge logat, iar componenta asta îl duce la "ultimul folosit".
+      const redirectTo = `${window.location.origin}/auth/callback`;
 
       const { error } = await supabase.auth.signInWithOtp({
         email,
@@ -55,7 +129,11 @@ export default function LoginPage() {
           </div>
         )}
 
-        {sent ? (
+        {checkingSession ? (
+          <div className="text-sm text-neutral-300 bg-neutral-800/40 border border-neutral-700 rounded-xl p-3">
+            Checking session...
+          </div>
+        ) : sent ? (
           <div className="text-sm text-green-300 bg-green-900/20 border border-green-800 rounded-xl p-3">
             ✅ Link trimis. Verifică emailul și apasă link-ul.
           </div>
