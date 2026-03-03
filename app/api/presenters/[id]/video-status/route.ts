@@ -2,9 +2,15 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function jsonError(status: number, error: string, details?: any) {
-  return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
+  const res = NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
+  return res;
 }
 
 function getPresenterId(req: Request, context: any) {
@@ -23,32 +29,28 @@ function getPresenterId(req: Request, context: any) {
   }
 }
 
-// simple mapping of pipeline steps -> % (MVP)
+// mapping simplu steps -> %
 function pipelineProgressFromSteps(steps: Array<{ step: string; status: string }> | null) {
   if (!steps || steps.length === 0) return 0;
 
   const statusOf = (name: string) => steps.find((s) => s.step === name)?.status ?? "queued";
 
-  // MVP steps you likely have
   const storyboard = statusOf("storyboard");
   const voiceover = statusOf("voiceover");
   const composition = statusOf("composition");
   const exportStep = statusOf("export");
 
-  // if any failed => show something but keep legacy status authoritative
   if ([storyboard, voiceover, composition, exportStep].includes("failed")) return 5;
 
-  // completed ladder (tweak later)
   if (exportStep === "completed") return 100;
   if (composition === "completed") return 90;
   if (voiceover === "completed") return 35;
   if (storyboard === "completed") return 15;
 
-  // processing ladder
   if (voiceover === "processing") return 25;
   if (storyboard === "processing") return 10;
 
-  return 1; // exists but queued
+  return 1;
 }
 
 export async function GET(req: Request, context: any) {
@@ -57,11 +59,9 @@ export async function GET(req: Request, context: any) {
 
   const supabase = await supabaseServer();
 
-  // auth
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
-  // verify presenter owner
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id")
@@ -71,11 +71,9 @@ export async function GET(req: Request, context: any) {
   if (pErr) return jsonError(500, "presenter_load_failed", pErr.message);
   if (!presenter || presenter.user_id !== auth.user.id) return jsonError(404, "not_found");
 
-  // Optional: ?jobId=...
   const url = new URL(req.url);
   const jobId = (url.searchParams.get("jobId") || "").trim();
 
-  // 1) legacy job (what UI already uses)
   let q = supabase
     .from("presenter_video_jobs")
     .select(
@@ -91,57 +89,53 @@ export async function GET(req: Request, context: any) {
   const job = jobs?.[0];
   if (!job) return jsonError(404, "job_missing");
 
-  // 2) pipeline job linked to legacy job (best-effort)
+  // pipeline (best-effort)
   let pipelineJobId: string | null = null;
   let pipelineSteps: Array<{ step: string; status: string; progress?: number | null }> | null = null;
   let voiceoverUrl: string | null = null;
 
   try {
-    const { data: prj, error: prjErr } = await supabase
+    const { data: prj } = await supabase
       .from("video_render_jobs")
       .select("id")
       .eq("legacy_job_id", job.id)
       .maybeSingle();
 
-    if (!prjErr && prj?.id) {
+    if (prj?.id) {
       pipelineJobId = prj.id;
 
-      const { data: steps, error: stErr } = await supabase
+      const { data: steps } = await supabase
         .from("video_render_steps")
         .select("step,status,progress")
         .eq("job_id", pipelineJobId);
 
-      if (!stErr && steps) {
-        pipelineSteps = steps as any;
-      }
+      pipelineSteps = (steps ?? null) as any;
 
-      // try find latest voiceover asset (signed/public url stored)
-      const { data: asset, error: aErr } = await supabase
+      const { data: asset } = await supabase
         .from("video_assets")
-        .select("public_url,storage_bucket,storage_path,status,created_at")
+        .select("public_url,status,created_at")
         .eq("job_id", pipelineJobId)
         .eq("asset_type", "audio_voice")
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!aErr && asset?.public_url && asset?.status === "completed") {
+      if (asset?.public_url && asset?.status === "completed") {
         voiceoverUrl = asset.public_url as string;
       }
     }
   } catch {
-    // ignore pipeline errors in status endpoint
+    // ignore
   }
 
-  // 3) effective progress: prefer legacy progress if it's >0, otherwise compute from pipeline steps
   const legacyProgress = Number(job.progress ?? 0);
   const pipelineProgress = pipelineProgressFromSteps(
-    pipelineSteps?.map((s) => ({ step: s.step, status: s.status })) ?? null
+    pipelineSteps?.map((s: any) => ({ step: s.step, status: s.status })) ?? null
   );
 
   const effectiveProgress = legacyProgress > 0 ? legacyProgress : pipelineProgress;
 
-  return NextResponse.json({
+  const res = NextResponse.json({
     job: {
       id: job.id,
       presenterId: job.presenter_id,
@@ -164,4 +158,9 @@ export async function GET(req: Request, context: any) {
         }
       : null,
   });
+
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
+  return res;
 }
