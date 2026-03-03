@@ -2,15 +2,9 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 function jsonError(status: number, error: string, details?: any) {
-  const res = NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.headers.set("Pragma", "no-cache");
-  res.headers.set("Expires", "0");
-  return res;
+  return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
 function getPresenterId(req: Request, context: any) {
@@ -29,28 +23,42 @@ function getPresenterId(req: Request, context: any) {
   }
 }
 
-// mapping simplu steps -> %
-function pipelineProgressFromSteps(steps: Array<{ step: string; status: string }> | null) {
-  if (!steps || steps.length === 0) return 0;
+function isTerminal(s?: string | null) {
+  const v = String(s || "").toLowerCase();
+  return v === "completed" || v === "failed" || v === "canceled";
+}
 
-  const statusOf = (name: string) => steps.find((s) => s.step === name)?.status ?? "queued";
+/**
+ * Heuristic progress based on pipeline steps statuses.
+ * Adjust weights any time; UI just needs monotonic progress.
+ */
+function computePipelineProgress(steps: Array<{ step: string; status: string; progress?: number | null }>) {
+  const map = new Map(steps.map((s) => [String(s.step), s]));
 
-  const storyboard = statusOf("storyboard");
-  const voiceover = statusOf("voiceover");
-  const composition = statusOf("composition");
-  const exportStep = statusOf("export");
+  const stepProgress = (name: string, base: number) => {
+    const s = map.get(name);
+    if (!s) return 0;
+    const st = String(s.status || "").toLowerCase();
 
-  if ([storyboard, voiceover, composition, exportStep].includes("failed")) return 5;
+    if (st === "completed") return base;
+    if (st === "failed") return base; // keep last-known
+    if (st === "processing" || st === "running") {
+      const p = Number(s.progress ?? 0);
+      // blend: base * 0.7 + base * 0.3 * (p/100)
+      return Math.max(1, Math.round(base * (0.7 + 0.3 * Math.min(100, Math.max(0, p)) / 100)));
+    }
+    if (st === "queued") return 0;
+    return 0;
+  };
 
-  if (exportStep === "completed") return 100;
-  if (composition === "completed") return 90;
-  if (voiceover === "completed") return 35;
-  if (storyboard === "completed") return 15;
+  // weights by step
+  const storyboard = stepProgress("storyboard", 25);
+  const voiceover = stepProgress("voiceover", 35);
+  const render = stepProgress("render", 35);
+  const finalize = stepProgress("finalize", 5);
 
-  if (voiceover === "processing") return 25;
-  if (storyboard === "processing") return 10;
-
-  return 1;
+  const total = storyboard + voiceover + render + finalize;
+  return Math.min(100, Math.max(0, total));
 }
 
 export async function GET(req: Request, context: any) {
@@ -59,9 +67,11 @@ export async function GET(req: Request, context: any) {
 
   const supabase = await supabaseServer();
 
+  // auth
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
+  // verify presenter owner
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id")
@@ -71,9 +81,11 @@ export async function GET(req: Request, context: any) {
   if (pErr) return jsonError(500, "presenter_load_failed", pErr.message);
   if (!presenter || presenter.user_id !== auth.user.id) return jsonError(404, "not_found");
 
+  // Optional: ?jobId=...
   const url = new URL(req.url);
   const jobId = (url.searchParams.get("jobId") || "").trim();
 
+  // 1) legacy job (used by UI today)
   let q = supabase
     .from("presenter_video_jobs")
     .select(
@@ -84,83 +96,115 @@ export async function GET(req: Request, context: any) {
   if (jobId) q = q.eq("id", jobId);
 
   const { data: jobs, error: jErr } = await q.order("created_at", { ascending: false }).limit(1);
+
   if (jErr) return jsonError(500, "job_load_failed", jErr.message);
 
-  const job = jobs?.[0];
-  if (!job) return jsonError(404, "job_missing");
+  const legacy = jobs?.[0];
+  if (!legacy) return jsonError(404, "job_missing");
 
-  // pipeline (best-effort)
-  let pipelineJobId: string | null = null;
-  let pipelineSteps: Array<{ step: string; status: string; progress?: number | null }> | null = null;
-  let voiceoverUrl: string | null = null;
+  // 2) try to find linked pipeline job
+  //    video_render_jobs.legacy_job_id = presenter_video_jobs.id
+  const { data: pipelineJob, error: pjErr } = await supabase
+    .from("public.video_render_jobs")
+    .select("id,status,progress,created_at,updated_at,legacy_job_id,presenter_id")
+    .eq("legacy_job_id", legacy.id)
+    .maybeSingle();
 
-  try {
-    const { data: prj } = await supabase
-      .from("video_render_jobs")
-      .select("id")
-      .eq("legacy_job_id", job.id)
-      .maybeSingle();
-
-    if (prj?.id) {
-      pipelineJobId = prj.id;
-
-      const { data: steps } = await supabase
-        .from("video_render_steps")
-        .select("step,status,progress")
-        .eq("job_id", pipelineJobId);
-
-      pipelineSteps = (steps ?? null) as any;
-
-      const { data: asset } = await supabase
-        .from("video_assets")
-        .select("public_url,status,created_at")
-        .eq("job_id", pipelineJobId)
-        .eq("asset_type", "audio_voice")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (asset?.public_url && asset?.status === "completed") {
-        voiceoverUrl = asset.public_url as string;
-      }
-    }
-  } catch {
-    // ignore
+  if (pjErr) {
+    // don't fail the endpoint; just return legacy
+    return NextResponse.json({
+      job: {
+        id: legacy.id,
+        presenterId: legacy.presenter_id,
+        scriptId: legacy.script_id,
+        scriptVersion: legacy.script_version,
+        status: legacy.status,
+        progress: legacy.progress ?? 0,
+        provider: legacy.provider ?? null,
+        providerJobId: legacy.provider_job_id ?? null,
+        videoUrl: legacy.video_url ?? null,
+        error: legacy.error ?? null,
+        createdAt: legacy.created_at,
+        updatedAt: legacy.updated_at,
+      },
+      pipeline: null,
+    });
   }
 
-  const legacyProgress = Number(job.progress ?? 0);
-  const pipelineProgress = pipelineProgressFromSteps(
-    pipelineSteps?.map((s: any) => ({ step: s.step, status: s.status })) ?? null
-  );
+  if (!pipelineJob) {
+    // no pipeline mapping yet
+    return NextResponse.json({
+      job: {
+        id: legacy.id,
+        presenterId: legacy.presenter_id,
+        scriptId: legacy.script_id,
+        scriptVersion: legacy.script_version,
+        status: legacy.status,
+        progress: legacy.progress ?? 0,
+        provider: legacy.provider ?? null,
+        providerJobId: legacy.provider_job_id ?? null,
+        videoUrl: legacy.video_url ?? null,
+        error: legacy.error ?? null,
+        createdAt: legacy.created_at,
+        updatedAt: legacy.updated_at,
+      },
+      pipeline: null,
+    });
+  }
 
-  const effectiveProgress = legacyProgress > 0 ? legacyProgress : pipelineProgress;
+  // 3) load steps for progress
+  const { data: steps, error: stepsErr } = await supabase
+    .from("public.video_render_steps")
+    .select("step,status,progress,started_at,completed_at,updated_at,error_message")
+    .eq("job_id", pipelineJob.id);
 
-  const res = NextResponse.json({
+  // 4) try to find final video asset (optional)
+  // adjust asset_type if your schema differs
+  const { data: videoAsset } = await supabase
+    .from("public.video_assets")
+    .select("public_url,storage_bucket,storage_path,status,asset_type,created_at")
+    .eq("job_id", pipelineJob.id)
+    .eq("asset_type", "video")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const pipelineProgress =
+    !stepsErr && Array.isArray(steps) ? computePipelineProgress(steps as any) : Number(pipelineJob.progress ?? 0);
+
+  const pipelineStatus = String(pipelineJob.status ?? "processing");
+  const terminal = isTerminal(pipelineStatus);
+
+  // 5) For UI compatibility: override legacy status/progress with pipeline-derived values
+  const effectiveStatus = terminal ? pipelineStatus : pipelineStatus;
+  const effectiveProgress = terminal ? 100 : pipelineProgress;
+
+  const effectiveVideoUrl =
+    (videoAsset as any)?.public_url ||
+    legacy.video_url ||
+    null;
+
+  return NextResponse.json({
     job: {
-      id: job.id,
-      presenterId: job.presenter_id,
-      scriptId: job.script_id,
-      scriptVersion: job.script_version,
-      status: job.status,
+      id: legacy.id,
+      presenterId: legacy.presenter_id,
+      scriptId: legacy.script_id,
+      scriptVersion: legacy.script_version,
+      status: effectiveStatus,
       progress: effectiveProgress,
-      provider: job.provider ?? null,
-      providerJobId: job.provider_job_id ?? null,
-      videoUrl: job.video_url ?? null,
-      error: job.error ?? null,
-      createdAt: job.created_at,
-      updatedAt: job.updated_at,
+      provider: legacy.provider ?? "pipeline",
+      providerJobId: legacy.provider_job_id ?? pipelineJob.id,
+      videoUrl: effectiveVideoUrl,
+      error: legacy.error ?? null,
+      createdAt: legacy.created_at,
+      updatedAt: legacy.updated_at,
     },
-    pipeline: pipelineJobId
-      ? {
-          jobId: pipelineJobId,
-          steps: pipelineSteps ?? [],
-          voiceoverUrl: voiceoverUrl ?? null,
-        }
-      : null,
+    pipeline: {
+      id: pipelineJob.id,
+      status: pipelineStatus,
+      progress: pipelineProgress,
+      steps: Array.isArray(steps) ? steps : null,
+      videoUrl: (videoAsset as any)?.public_url ?? null,
+    },
   });
-
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.headers.set("Pragma", "no-cache");
-  res.headers.set("Expires", "0");
-  return res;
 }
