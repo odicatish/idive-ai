@@ -8,10 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function jsonError(status: number, error: string, details?: any) {
-  return NextResponse.json(
-    { ok: false, error, ...(details ? { details } : {}) },
-    { status }
-  );
+  return NextResponse.json({ ok: false, error, ...(details ? { details } : {}) }, { status });
 }
 
 function timingSafeEqual(a: string, b: string) {
@@ -41,11 +38,6 @@ function getExpectedSecret() {
   return (process.env.VIDEO_WORKER_SECRET || "").trim();
 }
 
-/**
- * SAFE Supabase Admin (NU aruncă throw).
- * Dacă lipsesc env-urile, întoarce ok:false și detalii.
- * Asta previne crash la build în Vercel ("Failed to collect page data").
- */
 function supabaseAdminSafe() {
   const usedUrl =
     (process.env.SUPABASE_URL || "").trim() ||
@@ -59,12 +51,8 @@ function supabaseAdminSafe() {
       error: "missing_supabase_env",
       details: {
         has_SUPABASE_URL: !!(process.env.SUPABASE_URL || "").trim(),
-        has_NEXT_PUBLIC_SUPABASE_URL: !!(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || ""
-        ).trim(),
-        has_SUPABASE_SERVICE_ROLE_KEY: !!(
-          process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-        ).trim(),
+        has_NEXT_PUBLIC_SUPABASE_URL: !!(process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim(),
+        has_SUPABASE_SERVICE_ROLE_KEY: !!(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim(),
       },
       client: null as any,
       usedUrl,
@@ -89,87 +77,7 @@ function supabaseAdminSafe() {
   return { ok: true as const, client, usedUrl, projectRef };
 }
 
-/**
- * PIPELINE-FIRST: găsește un job pipeline eligibil pentru voiceover:
- * - voiceover = queued
- *
- * IMPORTANT: În MVP, NU mai cerem storyboard=completed ca să putem genera audio.
- * Vom reintroduce condiția după ce implementăm storyboard step real.
- */
-async function pickPipelineJobForVoiceover(supabase: any) {
-  const { data: row, error } = await supabase
-    .from("video_render_steps")
-    .select("job_id")
-    .eq("step", "voiceover")
-    .eq("status", "queued")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw new Error(`pick_voiceover_steps_failed: ${error.message}`);
-  return row?.job_id ?? null;
-}
-
-/**
- * Rulează voiceover pentru un pipeline job dacă există unul eligibil.
- * Returnează jobId dacă a făcut work, altfel null.
- */
-async function runPipelineVoiceoverIfAny(supabase: any) {
-  const jobId = await pickPipelineJobForVoiceover(supabase);
-  if (!jobId) return null;
-
-  const nowIso = new Date().toISOString();
-
-  // lock step: voiceover queued -> processing
-  const { data: lockedStep, error: lockErr } = await supabase
-    .from("video_render_steps")
-    .update({
-      status: "processing",
-      progress: 5,
-      started_at: nowIso,
-      updated_at: nowIso,
-      error_message: null,
-    })
-    .eq("job_id", jobId)
-    .eq("step", "voiceover")
-    .eq("status", "queued")
-    .select("job_id, step, status")
-    .maybeSingle();
-
-  // dacă alt worker a luat deja, nu facem nimic
-  if (lockErr) throw new Error(`voiceover_lock_failed: ${lockErr.message}`);
-  if (!lockedStep) return null;
-
-  try {
-    await generateVoiceoverForJob(jobId);
-
-    await supabase
-      .from("video_render_steps")
-      .update({
-        status: "completed",
-        progress: 100,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("job_id", jobId)
-      .eq("step", "voiceover");
-
-    return jobId;
-  } catch (e: any) {
-    const msg = e?.message ?? String(e);
-    await supabase
-      .from("video_render_steps")
-      .update({
-        status: "failed",
-        error_message: msg,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("job_id", jobId)
-      .eq("step", "voiceover");
-
-    throw e;
-  }
-}
+// ---- pipeline helpers ----
 
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   const nowIso = new Date().toISOString();
@@ -193,14 +101,14 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
 
   const { data: pipelineJob, error: fetchErr } = await supabase
     .from("video_render_jobs")
-    .select("id")
+    .select("id, legacy_job_id")
     .eq("legacy_job_id", legacyJob.id)
     .maybeSingle();
 
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // best effort seed steps
+  // seed steps (best-effort)
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
@@ -208,24 +116,133 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   return pipelineJob.id as string;
 }
 
-async function canRunVoiceover(supabase: any, pipelineJobId: string) {
-  const { data: steps, error } = await supabase
+async function pickPipelineJobForVoiceover(supabase: any) {
+  const { data: voiceRows, error: vErr } = await supabase
     .from("video_render_steps")
-    .select("step,status")
-    .eq("job_id", pipelineJobId);
+    .select("job_id")
+    .eq("step", "voiceover")
+    .eq("status", "queued")
+    .limit(25);
 
-  if (error) throw new Error(`steps_fetch_failed: ${error.message}`);
-  if (!steps) return false;
+  if (vErr) throw new Error(`pick_voiceover_steps_failed: ${vErr.message}`);
+  if (!voiceRows || voiceRows.length === 0) return null;
 
-  const storyboard = steps.find((s: any) => s.step === "storyboard");
-  const voiceover = steps.find((s: any) => s.step === "voiceover");
-  return storyboard?.status === "completed" && voiceover?.status === "queued";
+  for (const row of voiceRows) {
+    const { data: sb, error: sbErr } = await supabase
+      .from("video_render_steps")
+      .select("status")
+      .eq("job_id", row.job_id)
+      .eq("step", "storyboard")
+      .maybeSingle();
+
+    if (sbErr) continue;
+    if (sb?.status === "completed") return row.job_id as string;
+  }
+
+  return null;
+}
+
+async function syncLegacyProgressFromPipeline(supabase: any, pipelineJobId: string, patch: any) {
+  const { data: pj } = await supabase
+    .from("video_render_jobs")
+    .select("legacy_job_id")
+    .eq("id", pipelineJobId)
+    .maybeSingle();
+
+  const legacyJobId = pj?.legacy_job_id;
+  if (!legacyJobId) return;
+
+  await supabase
+    .from("presenter_video_jobs")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", legacyJobId);
+}
+
+async function runPipelineVoiceoverIfAny(supabase: any) {
+  const jobId = await pickPipelineJobForVoiceover(supabase);
+  if (!jobId) return null;
+
+  const nowIso = new Date().toISOString();
+
+  // lock step
+  const { data: lockedStep, error: lockErr } = await supabase
+    .from("video_render_steps")
+    .update({
+      status: "processing",
+      progress: 5,
+      started_at: nowIso,
+      updated_at: nowIso,
+      error_message: null,
+    })
+    .eq("job_id", jobId)
+    .eq("step", "voiceover")
+    .eq("status", "queued")
+    .select("job_id, step, status")
+    .maybeSingle();
+
+  if (lockErr) throw new Error(`voiceover_lock_failed: ${lockErr.message}`);
+  if (!lockedStep) return null;
+
+  // reflect in legacy UI immediately
+  await syncLegacyProgressFromPipeline(supabase, jobId, {
+    status: "processing",
+    progress: 15,
+    provider: "openai-tts",
+    error: null,
+  });
+
+  try {
+    await generateVoiceoverForJob(jobId);
+
+    await supabase
+      .from("video_render_steps")
+      .update({
+        status: "completed",
+        progress: 100,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId)
+      .eq("step", "voiceover");
+
+    await supabase
+      .from("video_render_jobs")
+      .update({ progress: 30, updated_at: new Date().toISOString() })
+      .eq("id", jobId);
+
+    // legacy progress moves too (UI now updates)
+    await syncLegacyProgressFromPipeline(supabase, jobId, {
+      status: "processing",
+      progress: 30,
+      provider: "openai-tts",
+    });
+
+    return jobId;
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    await supabase
+      .from("video_render_steps")
+      .update({
+        status: "failed",
+        error_message: msg,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId)
+      .eq("step", "voiceover");
+
+    await syncLegacyProgressFromPipeline(supabase, jobId, {
+      status: "failed",
+      error: `voiceover_error: ${msg}`,
+    });
+
+    throw e;
+  }
 }
 
 export async function GET(req: Request) {
   const secret = getSecret(req);
   const expected = getExpectedSecret();
-
   const sb = supabaseAdminSafe();
 
   return NextResponse.json({
@@ -235,9 +252,7 @@ export async function GET(req: Request) {
     secretConfigured: !!expected,
     secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
     supabaseEnvOk: sb.ok,
-    supabaseEnv: !sb.ok ? sb.details : undefined,
-    message:
-      "POST will process pipeline voiceover if queued; otherwise processes one queued legacy job (requires secret).",
+    message: "POST will process pipeline voiceover OR one queued legacy job (requires secret).",
   });
 }
 
@@ -246,12 +261,8 @@ export async function POST(req: Request) {
     const secret = getSecret(req);
     const expected = getExpectedSecret();
 
-    if (!expected) {
-      return jsonError(500, "worker_secret_missing", "Set VIDEO_WORKER_SECRET in env.");
-    }
-    if (!secret || !timingSafeEqual(secret, expected)) {
-      return jsonError(401, "unauthorized_worker");
-    }
+    if (!expected) return jsonError(500, "worker_secret_missing", "Set VIDEO_WORKER_SECRET in env.");
+    if (!secret || !timingSafeEqual(secret, expected)) return jsonError(401, "unauthorized_worker");
 
     const sb = supabaseAdminSafe();
     if (!sb.ok) return jsonError(500, sb.error, sb.details);
@@ -260,38 +271,26 @@ export async function POST(req: Request) {
     const usedUrl = sb.usedUrl;
     const projectRef = sb.projectRef;
 
-    // 0) PIPELINE-FIRST voiceover (NU depinde de legacy job)
-    try {
-      const pipelineJobId = await runPipelineVoiceoverIfAny(supabase);
-      if (pipelineJobId) {
-        return NextResponse.json({
-          ok: true,
-          didWork: true,
-          ran: "pipeline_voiceover",
-          pipelineJobId,
-          debug: { usedUrl, projectRef },
-        });
-      }
-    } catch (e: any) {
-      return jsonError(500, "pipeline_voiceover_failed", e?.message ?? String(e));
+    // 0) PIPELINE-FIRST voiceover
+    const pipelineJobId = await runPipelineVoiceoverIfAny(supabase);
+    if (pipelineJobId) {
+      return NextResponse.json({
+        ok: true,
+        didWork: true,
+        ran: "pipeline_voiceover",
+        pipelineJobId,
+        debug: { usedUrl, projectRef },
+      });
     }
 
-    // 1) pick next queued legacy job
-    const { data: job, error: pickErr } = await supabase
+    // 1) fallback: take one legacy queued job and ensure pipeline exists
+    const { data: job } = await supabase
       .from("presenter_video_jobs")
       .select("*")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
-
-    if (pickErr) {
-      return jsonError(500, "job_pick_failed", {
-        message: pickErr.message,
-        usedUrl,
-        projectRef,
-      });
-    }
 
     if (!job) {
       return NextResponse.json({
@@ -302,140 +301,34 @@ export async function POST(req: Request) {
       });
     }
 
+    // lock legacy
     const nowIso = new Date().toISOString();
-
-    // 2) atomic lock
-    const { data: locked, error: lockErr } = await supabase
+    const { data: locked } = await supabase
       .from("presenter_video_jobs")
-      .update({
-        status: "processing",
-        progress: 5,
-        error: null,
-        updated_at: nowIso,
-      })
+      .update({ status: "processing", progress: 5, error: null, updated_at: nowIso })
       .eq("id", job.id)
       .eq("status", "queued")
-      .select("id,status,progress,presenter_id,script_id,script_version,created_by")
+      .select("id")
       .maybeSingle();
-
-    if (lockErr) {
-      return jsonError(500, "job_lock_failed", {
-        message: lockErr.message,
-        usedUrl,
-        projectRef,
-      });
-    }
 
     if (!locked) {
       return NextResponse.json({
         ok: true,
         didWork: false,
-        message: "Job was already taken by another worker run.",
+        message: "Legacy job already taken by another run.",
         debug: { usedUrl, projectRef },
       });
     }
 
-    // 3) ensure pipeline job exists (best-effort)
-    let pipelineJobId: string | null = null;
-    try {
-      pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
-    } catch (e: any) {
-      console.error("PIPELINE_LINK_ERROR", e?.message ?? e);
-      await supabase
-        .from("presenter_video_jobs")
-        .update({
-          error: `pipeline_link_error: ${e?.message ?? String(e)}`,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", job.id);
-    }
-
-    // 4) try voiceover if eligible (legacy-linked - păstrăm condiția veche aici)
-    let voiceoverRan = false;
-    if (pipelineJobId) {
-      try {
-        const okToRun = await canRunVoiceover(supabase, pipelineJobId);
-        if (okToRun) {
-          await generateVoiceoverForJob(pipelineJobId);
-          voiceoverRan = true;
-
-          await supabase
-            .from("presenter_video_jobs")
-            .update({ progress: 20, updated_at: new Date().toISOString() })
-            .eq("id", job.id);
-        }
-      } catch (e: any) {
-        console.error("VOICEOVER_ERROR", e?.message ?? e);
-        try {
-          await supabase
-            .from("video_render_steps")
-            .update({
-              status: "failed",
-              error_message: e?.message ?? String(e),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("job_id", pipelineJobId)
-            .eq("step", "voiceover");
-        } catch {}
-
-        await supabase
-          .from("presenter_video_jobs")
-          .update({
-            error: `voiceover_error: ${e?.message ?? String(e)}`,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", job.id);
-      }
-    }
-
-    // 5) keep existing mock progress (so UI still works)
-    await new Promise((r) => setTimeout(r, 250));
-    await supabase
-      .from("presenter_video_jobs")
-      .update({ progress: 25, updated_at: new Date().toISOString() })
-      .eq("id", job.id);
-
-    await new Promise((r) => setTimeout(r, 250));
-    await supabase
-      .from("presenter_video_jobs")
-      .update({ progress: 55, updated_at: new Date().toISOString() })
-      .eq("id", job.id);
-
-    await new Promise((r) => setTimeout(r, 250));
-    await supabase
-      .from("presenter_video_jobs")
-      .update({ progress: 85, updated_at: new Date().toISOString() })
-      .eq("id", job.id);
-
-    const fakeUrl = `https://example.com/videos/${job.presenter_id}/${job.id}.mp4`;
-
-    // 6) complete legacy job
-    const { error: doneErr } = await supabase
-      .from("presenter_video_jobs")
-      .update({
-        status: "completed",
-        progress: 100,
-        video_url: fakeUrl,
-        provider: voiceoverRan ? "mock+openai-tts" : "mock",
-        provider_job_id: String(job.id),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id);
-
-    if (doneErr) {
-      return jsonError(500, "job_complete_failed", {
-        message: doneErr.message,
-        usedUrl,
-        projectRef,
-      });
-    }
+    // ensure pipeline now
+    const createdPipelineId = await ensurePipelineJobForLegacyJob(supabase, job);
 
     return NextResponse.json({
       ok: true,
       didWork: true,
-      ranVoiceover: voiceoverRan,
-      pipelineJobId,
-      job: { id: job.id, status: "completed", progress: 100, videoUrl: fakeUrl },
+      ran: "legacy_link_pipeline",
+      legacyJobId: job.id,
+      pipelineJobId: createdPipelineId,
       debug: { usedUrl, projectRef },
     });
   } catch (e: any) {
