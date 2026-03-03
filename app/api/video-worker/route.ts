@@ -76,10 +76,10 @@ function supabaseAdminSafe() {
   return { ok: true as const, client, usedUrl, projectRef };
 }
 
-// ✅ acceptă orice formă de return de la generateVoiceoverForJob
+// acceptă orice formă de return de la generateVoiceoverForJob
 function extractSignedUrl(vo: any): string | null {
   if (!vo) return null;
-  if (typeof vo === "string") return vo; // dacă funcția întoarce direct url-ul
+  if (typeof vo === "string") return vo;
   if (typeof vo?.signedUrl === "string") return vo.signedUrl;
   if (typeof vo?.voiceUrl === "string") return vo.voiceUrl;
   if (typeof vo?.url === "string") return vo.url;
@@ -115,12 +115,49 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // best-effort seed steps
+  // seed steps (best-effort)
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
 
   return pipelineJob.id as string;
+}
+
+/**
+ * MVP FINALIZER:
+ * - după voiceover, marcăm pipeline ca completed și restul steps ca skipped
+ * - astfel /video-status + UI nu mai rămân blocate la 17% / queued
+ */
+async function finalizePipelineAsVoiceoverOnly(supabase: any, pipelineJobId: string, signedUrl: string | null) {
+  const now = new Date().toISOString();
+
+  // 1) mark remaining steps skipped (best-effort)
+  try {
+    await supabase
+      .from("video_render_steps")
+      .update({
+        status: "skipped",
+        progress: 0,
+        completed_at: now,
+        updated_at: now,
+      })
+      .eq("job_id", pipelineJobId)
+      .in("step", ["storyboard", "scene_generation", "captions", "composition", "export"])
+      .eq("status", "queued");
+  } catch {}
+
+  // 2) mark pipeline job completed
+  try {
+    await supabase
+      .from("video_render_jobs")
+      .update({
+        status: "completed",
+        progress: 100,
+        video_url: signedUrl,
+        updated_at: now,
+      })
+      .eq("id", pipelineJobId);
+  } catch {}
 }
 
 async function processLegacyJob(supabase: any, legacyJobId: string) {
@@ -157,7 +194,10 @@ async function processLegacyJob(supabase: any, legacyJobId: string) {
   const vo = await generateVoiceoverForJob(pipelineJobId);
   const signedUrl = extractSignedUrl(vo);
 
-  // ✅ important pentru UI: setăm progress + video_url
+  // ✅ MVP: finalize pipeline so UI doesn't stick at 17%
+  await finalizePipelineAsVoiceoverOnly(supabase, pipelineJobId, signedUrl);
+
+  // ✅ important pentru UI: setăm progress + video_url pe legacy
   await supabase
     .from("presenter_video_jobs")
     .update({
@@ -207,7 +247,7 @@ export async function POST(req: Request) {
 
     const supabase = sb.client;
 
-    // ✅ jobId optional (?jobId=uuid)
+    // jobId optional (?jobId=uuid)
     let jobId = "";
     try {
       const url = new URL(req.url);
