@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { generateVoiceoverForJob } from "../../../lib/video/generateVoiceover";
-import { renderMp4ForJob } from "../../../lib/video/renderMp4";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -125,14 +124,58 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
 }
 
 /**
+ * ✅ RENDER MP4 via Railway worker
+ * Trimite audioUrl (signed mp3) și jobId (pipeline job id),
+ * worker-ul upload-ează mp4 în Storage și inserează video_assets(video_mp4).
+ */
+async function renderMp4ViaRailway(pipelineJobId: string, audioUrl: string) {
+  const base = (process.env.VIDEO_RENDERER_URL || "").trim();
+  const secret = (process.env.VIDEO_RENDERER_SECRET || "").trim();
+  if (!base || !secret) {
+    // dacă lipsește, nu stricăm flow-ul — rămâne mp3
+    return { ok: false as const, reason: "missing_VIDEO_RENDERER_URL_or_SECRET" };
+  }
+
+  const endpoint = `${base.replace(/\/$/, "")}/render-mp4`;
+
+  const r = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${secret}`,
+    },
+    body: JSON.stringify({
+      jobId: pipelineJobId,
+      audioUrl,
+      output: { bucket: "renders", path: `videos/${pipelineJobId}.mp4` },
+    }),
+  });
+
+  const txt = await r.text().catch(() => "");
+  let json: any = null;
+  try {
+    json = txt ? JSON.parse(txt) : null;
+  } catch {
+    json = { raw: txt };
+  }
+
+  if (!r.ok) {
+    return { ok: false as const, reason: "railway_render_failed", status: r.status, response: json };
+  }
+
+  return { ok: true as const, mp4Url: json?.mp4Url ?? null, response: json };
+}
+
+/**
  * MVP FINALIZER:
- * - marcăm pipeline ca completed și restul steps ca skipped
- * - video_url = mp4Url dacă există, altfel fallback la mp3
+ * - după voiceover, marcăm pipeline ca completed și restul steps ca skipped
+ * - astfel /video-status + UI nu mai rămân blocate la 17% / queued
  */
 async function finalizePipelineAsVoiceoverOnly(
   supabase: any,
   pipelineJobId: string,
-  finalUrl: string | null
+  signedUrl: string | null,
+  preferredVideoUrl?: string | null
 ) {
   const now = new Date().toISOString();
 
@@ -158,7 +201,8 @@ async function finalizePipelineAsVoiceoverOnly(
       .update({
         status: "completed",
         progress: 100,
-        video_url: finalUrl,
+        // dacă avem mp4, îl preferăm
+        video_url: preferredVideoUrl ?? signedUrl,
         updated_at: now,
       })
       .eq("id", pipelineJobId);
@@ -199,28 +243,27 @@ async function processLegacyJob(supabase: any, legacyJobId: string) {
   const vo = await generateVoiceoverForJob(pipelineJobId);
   const signedUrl = extractSignedUrl(vo);
 
-  // NEW: render MP4 after voiceover
+  // ✅ nou: după ce avem mp3, încercăm să randăm mp4 pe Railway
   let mp4Url: string | null = null;
-  try {
-    mp4Url = await renderMp4ForJob(pipelineJobId);
-  } catch (e: any) {
-    // Nu blocăm tot job-ul dacă mp4 pică; păstrăm fallback mp3.
-    console.error("MP4_RENDER_FAILED", e?.message ?? e);
-    mp4Url = null;
+  let mp4Debug: any = null;
+  if (signedUrl) {
+    const mp4 = await renderMp4ViaRailway(pipelineJobId, signedUrl);
+    mp4Debug = mp4;
+    if (mp4.ok && mp4.mp4Url) mp4Url = mp4.mp4Url;
   }
 
-  // finalize pipeline (prefer mp4)
-  await finalizePipelineAsVoiceoverOnly(supabase, pipelineJobId, mp4Url || signedUrl);
+  // ✅ finalize pipeline so UI doesn't stick at 17%
+  await finalizePipelineAsVoiceoverOnly(supabase, pipelineJobId, signedUrl, mp4Url);
 
-  // important pentru UI legacy: setăm progress + video_url (prefer mp4)
+  // ✅ important pentru UI: setăm progress + video_url pe legacy (preferăm mp4 dacă există)
   await supabase
     .from("presenter_video_jobs")
     .update({
       status: "completed",
       progress: 100,
-      provider: mp4Url ? "remotion-mp4" : "openai-tts-mvp",
+      provider: mp4Url ? "ffmpeg-worker" : "openai-tts-mvp",
       provider_job_id: pipelineJobId,
-      video_url: mp4Url || signedUrl,
+      video_url: mp4Url ?? signedUrl,
       updated_at: new Date().toISOString(),
     })
     .eq("id", legacyJobId);
@@ -231,7 +274,7 @@ async function processLegacyJob(supabase: any, legacyJobId: string) {
     pipelineJobId,
     voiceUrl: signedUrl,
     mp4Url,
-    finalUrl: mp4Url || signedUrl,
+    mp4Debug,
   };
 }
 

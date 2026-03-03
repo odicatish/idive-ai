@@ -113,7 +113,6 @@ function computePipelineProgress(steps: StepRow[]) {
 /**
  * ✅ MVP UI mapping:
  * Considerăm job "gata" când VOICEOVER e completed.
- * Altfel: queued/processing pe baza voiceover.
  */
 function computeMvpUiFromVoiceover(steps: StepRow[]) {
   const vo = steps?.find((s) => s.step === "voiceover");
@@ -227,30 +226,29 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) prefer mp4 asset, fallback la mp3 asset
-  const { data: videoAsset } = await supabase
+  // 4) ✅ preferăm MP4, fallback pe audio
+  const { data: assetMp4 } = await supabase
     .from("video_assets")
-    .select("public_url")
+    .select("public_url,asset_type,status,created_at")
     .eq("job_id", pipelineJob.id)
     .eq("asset_type", "video_mp4")
     .eq("status", "completed")
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
 
-  let pipelineVideoUrl = videoAsset?.public_url ?? null;
+  const { data: assetAudio } = await supabase
+    .from("video_assets")
+    .select("public_url,asset_type,status,created_at")
+    .eq("job_id", pipelineJob.id)
+    .eq("asset_type", "audio_voice")
+    .eq("status", "completed")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (!pipelineVideoUrl) {
-    const { data: audioAsset } = await supabase
-      .from("video_assets")
-      .select("public_url")
-      .eq("job_id", pipelineJob.id)
-      .eq("asset_type", "audio_voice")
-      .eq("status", "completed")
-      .maybeSingle();
+  const pipelineVideoUrl = (assetMp4?.public_url ?? assetAudio?.public_url ?? null) as string | null;
 
-    pipelineVideoUrl = audioAsset?.public_url ?? null;
-  }
-
-  // Dacă steps fail -> fallback la legacy, dar păstrăm providerJobId ca pipeline id
   if (stepsErr) {
     const p = Number(job.progress ?? pipelineJob.progress ?? 0);
 
@@ -281,9 +279,7 @@ export async function GET(req: Request, context: any) {
     });
   }
 
-  // ✅ MVP UI: după voiceover => 100%
   const mvpUi = computeMvpUiFromVoiceover(steps);
-
   const computedPipeline = computePipelineProgress(steps);
 
   return NextResponse.json({
