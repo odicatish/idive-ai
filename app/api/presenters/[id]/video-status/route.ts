@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -40,14 +41,16 @@ function computePipelineProgress(
     const st = String(s.status || "").toLowerCase();
     if (st === "completed") return weight;
     if (st === "failed") return weight;
+
     if (st === "processing" || st === "running") {
       const p = Math.min(100, Math.max(0, Number(s.progress ?? 0)));
       return Math.max(1, Math.round(weight * (0.6 + 0.4 * (p / 100))));
     }
+
     return 0; // queued/unknown
   };
 
-  // weights
+  // weights (tune later)
   const storyboard = stepProgress("storyboard", 25);
   const voiceover = stepProgress("voiceover", 35);
   const render = stepProgress("render", 35);
@@ -56,17 +59,45 @@ function computePipelineProgress(
   return Math.min(100, Math.max(0, storyboard + voiceover + render + finalize));
 }
 
+function supabaseAdminSafe() {
+  const usedUrl =
+    (process.env.SUPABASE_URL || "").trim() ||
+    (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  if (!usedUrl || !serviceKey) {
+    return {
+      ok: false as const,
+      error: "missing_supabase_admin_env",
+      details: {
+        has_SUPABASE_URL: !!(process.env.SUPABASE_URL || "").trim(),
+        has_NEXT_PUBLIC_SUPABASE_URL: !!(process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim(),
+        has_SUPABASE_SERVICE_ROLE_KEY: !!(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim(),
+      },
+      client: null as any,
+    };
+  }
+
+  const client = createClient(usedUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  return { ok: true as const, client };
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
 
-  const supabase = await supabaseServer();
+  const url = new URL(req.url);
+  const jobId = (url.searchParams.get("jobId") || "").trim();
+  const debug = (url.searchParams.get("debug") || "").trim() === "1";
 
-  // auth
+  // 1) auth + ownership check (user session)
+  const supabase = await supabaseServer();
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
-  // verify presenter owner
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id")
@@ -76,11 +107,7 @@ export async function GET(req: Request, context: any) {
   if (pErr) return jsonError(500, "presenter_load_failed", pErr.message);
   if (!presenter || presenter.user_id !== auth.user.id) return jsonError(404, "not_found");
 
-  // Optional: ?jobId=...
-  const url = new URL(req.url);
-  const jobId = (url.searchParams.get("jobId") || "").trim();
-
-  // 1) legacy job (UI)
+  // 2) get latest legacy job (UI job)
   let q = supabase
     .from("presenter_video_jobs")
     .select(
@@ -99,20 +126,49 @@ export async function GET(req: Request, context: any) {
   const legacy = jobs?.[0];
   if (!legacy) return jsonError(404, "job_missing");
 
-  // 2) try pipeline job linked by legacy_job_id
+  // 3) pipeline read via service role (bypass RLS)
+  const admin = supabaseAdminSafe();
+  if (!admin.ok) {
+    // still return legacy job so UI doesn't crash
+    return NextResponse.json({
+      job: {
+        id: legacy.id,
+        presenterId: legacy.presenter_id,
+        scriptId: legacy.script_id,
+        scriptVersion: legacy.script_version,
+        status: legacy.status,
+        progress: legacy.progress ?? 0,
+        provider: legacy.provider ?? null,
+        providerJobId: legacy.provider_job_id ?? null,
+        videoUrl: legacy.video_url ?? null,
+        error: legacy.error ?? null,
+        createdAt: legacy.created_at,
+        updatedAt: legacy.updated_at,
+      },
+      pipeline: null,
+      ...(debug ? { debug: { adminEnv: admin.details } } : {}),
+    });
+  }
+
+  const sb = admin.client;
+
+  const dbg: any = {};
+
+  // 3a) try by legacy_job_id
   let pipelineJob: any = null;
 
-  const { data: byLegacy, error: byLegacyErr } = await supabase
+  const { data: byLegacy, error: byLegacyErr } = await sb
     .from("video_render_jobs")
     .select("id,status,progress,created_at,updated_at,legacy_job_id,presenter_id")
     .eq("legacy_job_id", legacy.id)
     .maybeSingle();
 
-  if (!byLegacyErr && byLegacy) {
-    pipelineJob = byLegacy;
-  } else {
-    // 3) fallback: latest pipeline job by presenter_id (THIS is the missing piece in your setup)
-    const { data: byPresenter, error: byPresenterErr } = await supabase
+  if (byLegacyErr && debug) dbg.byLegacyErr = byLegacyErr.message;
+  if (byLegacy) pipelineJob = byLegacy;
+
+  // 3b) fallback: latest by presenter_id
+  if (!pipelineJob) {
+    const { data: byPresenter, error: byPresenterErr } = await sb
       .from("video_render_jobs")
       .select("id,status,progress,created_at,updated_at,legacy_job_id,presenter_id")
       .eq("presenter_id", presenterId)
@@ -120,10 +176,11 @@ export async function GET(req: Request, context: any) {
       .limit(1)
       .maybeSingle();
 
-    if (!byPresenterErr && byPresenter) pipelineJob = byPresenter;
+    if (byPresenterErr && debug) dbg.byPresenterErr = byPresenterErr.message;
+    if (byPresenter) pipelineJob = byPresenter;
   }
 
-  // If still no pipeline job, return legacy as-is
+  // if still none, return legacy
   if (!pipelineJob) {
     return NextResponse.json({
       job: {
@@ -141,14 +198,17 @@ export async function GET(req: Request, context: any) {
         updatedAt: legacy.updated_at,
       },
       pipeline: null,
+      ...(debug ? { debug: { ...dbg, note: "No pipeline job found for this presenter/legacy job." } } : {}),
     });
   }
 
-  // 4) steps for progress
-  const { data: steps, error: stepsErr } = await supabase
+  // 4) read steps
+  const { data: steps, error: stepsErr } = await sb
     .from("video_render_steps")
     .select("step,status,progress,started_at,completed_at,updated_at,error_message")
     .eq("job_id", pipelineJob.id);
+
+  if (stepsErr && debug) dbg.stepsErr = stepsErr.message;
 
   const pipelineProgress =
     !stepsErr && Array.isArray(steps)
@@ -158,8 +218,8 @@ export async function GET(req: Request, context: any) {
   const pipelineStatus = String(pipelineJob.status ?? "processing");
   const terminal = isTerminal(pipelineStatus);
 
-  // 5) best-effort: find a video asset (if exists)
-  const { data: videoAsset } = await supabase
+  // 5) find latest video asset (if exists)
+  const { data: videoAsset, error: assetErr } = await sb
     .from("video_assets")
     .select("public_url,storage_bucket,storage_path,status,asset_type,created_at")
     .eq("job_id", pipelineJob.id)
@@ -168,9 +228,11 @@ export async function GET(req: Request, context: any) {
     .limit(1)
     .maybeSingle();
 
+  if (assetErr && debug) dbg.assetErr = assetErr.message;
+
   const effectiveVideoUrl = (videoAsset as any)?.public_url || legacy.video_url || null;
 
-  // 6) override legacy job for UI
+  // 6) return UI job "as pipeline"
   return NextResponse.json({
     job: {
       id: legacy.id,
@@ -194,5 +256,6 @@ export async function GET(req: Request, context: any) {
       videoUrl: (videoAsset as any)?.public_url ?? null,
       legacy_job_id: pipelineJob.legacy_job_id ?? null,
     },
+    ...(debug ? { debug: dbg } : {}),
   });
 }
