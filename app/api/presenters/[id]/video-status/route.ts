@@ -23,6 +23,34 @@ function getPresenterId(req: Request, context: any) {
   }
 }
 
+// simple mapping of pipeline steps -> % (MVP)
+function pipelineProgressFromSteps(steps: Array<{ step: string; status: string }> | null) {
+  if (!steps || steps.length === 0) return 0;
+
+  const statusOf = (name: string) => steps.find((s) => s.step === name)?.status ?? "queued";
+
+  // MVP steps you likely have
+  const storyboard = statusOf("storyboard");
+  const voiceover = statusOf("voiceover");
+  const composition = statusOf("composition");
+  const exportStep = statusOf("export");
+
+  // if any failed => show something but keep legacy status authoritative
+  if ([storyboard, voiceover, composition, exportStep].includes("failed")) return 5;
+
+  // completed ladder (tweak later)
+  if (exportStep === "completed") return 100;
+  if (composition === "completed") return 90;
+  if (voiceover === "completed") return 35;
+  if (storyboard === "completed") return 15;
+
+  // processing ladder
+  if (voiceover === "processing") return 25;
+  if (storyboard === "processing") return 10;
+
+  return 1; // exists but queued
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
@@ -47,6 +75,7 @@ export async function GET(req: Request, context: any) {
   const url = new URL(req.url);
   const jobId = (url.searchParams.get("jobId") || "").trim();
 
+  // 1) legacy job (what UI already uses)
   let q = supabase
     .from("presenter_video_jobs")
     .select(
@@ -57,11 +86,60 @@ export async function GET(req: Request, context: any) {
   if (jobId) q = q.eq("id", jobId);
 
   const { data: jobs, error: jErr } = await q.order("created_at", { ascending: false }).limit(1);
-
   if (jErr) return jsonError(500, "job_load_failed", jErr.message);
 
   const job = jobs?.[0];
   if (!job) return jsonError(404, "job_missing");
+
+  // 2) pipeline job linked to legacy job (best-effort)
+  let pipelineJobId: string | null = null;
+  let pipelineSteps: Array<{ step: string; status: string; progress?: number | null }> | null = null;
+  let voiceoverUrl: string | null = null;
+
+  try {
+    const { data: prj, error: prjErr } = await supabase
+      .from("video_render_jobs")
+      .select("id")
+      .eq("legacy_job_id", job.id)
+      .maybeSingle();
+
+    if (!prjErr && prj?.id) {
+      pipelineJobId = prj.id;
+
+      const { data: steps, error: stErr } = await supabase
+        .from("video_render_steps")
+        .select("step,status,progress")
+        .eq("job_id", pipelineJobId);
+
+      if (!stErr && steps) {
+        pipelineSteps = steps as any;
+      }
+
+      // try find latest voiceover asset (signed/public url stored)
+      const { data: asset, error: aErr } = await supabase
+        .from("video_assets")
+        .select("public_url,storage_bucket,storage_path,status,created_at")
+        .eq("job_id", pipelineJobId)
+        .eq("asset_type", "audio_voice")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!aErr && asset?.public_url && asset?.status === "completed") {
+        voiceoverUrl = asset.public_url as string;
+      }
+    }
+  } catch {
+    // ignore pipeline errors in status endpoint
+  }
+
+  // 3) effective progress: prefer legacy progress if it's >0, otherwise compute from pipeline steps
+  const legacyProgress = Number(job.progress ?? 0);
+  const pipelineProgress = pipelineProgressFromSteps(
+    pipelineSteps?.map((s) => ({ step: s.step, status: s.status })) ?? null
+  );
+
+  const effectiveProgress = legacyProgress > 0 ? legacyProgress : pipelineProgress;
 
   return NextResponse.json({
     job: {
@@ -70,7 +148,7 @@ export async function GET(req: Request, context: any) {
       scriptId: job.script_id,
       scriptVersion: job.script_version,
       status: job.status,
-      progress: job.progress ?? 0,
+      progress: effectiveProgress,
       provider: job.provider ?? null,
       providerJobId: job.provider_job_id ?? null,
       videoUrl: job.video_url ?? null,
@@ -78,5 +156,12 @@ export async function GET(req: Request, context: any) {
       createdAt: job.created_at,
       updatedAt: job.updated_at,
     },
+    pipeline: pipelineJobId
+      ? {
+          jobId: pipelineJobId,
+          steps: pipelineSteps ?? [],
+          voiceoverUrl: voiceoverUrl ?? null,
+        }
+      : null,
   });
 }
