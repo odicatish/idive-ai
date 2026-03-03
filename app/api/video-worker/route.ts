@@ -92,32 +92,22 @@ function supabaseAdminSafe() {
 /**
  * PIPELINE-FIRST: găsește un job pipeline eligibil pentru voiceover:
  * - voiceover = queued
- * - storyboard = completed
+ *
+ * IMPORTANT: În MVP, NU mai cerem storyboard=completed ca să putem genera audio.
+ * Vom reintroduce condiția după ce implementăm storyboard step real.
  */
 async function pickPipelineJobForVoiceover(supabase: any) {
-  const { data: voiceRows, error: vErr } = await supabase
+  const { data: row, error } = await supabase
     .from("video_render_steps")
     .select("job_id")
     .eq("step", "voiceover")
     .eq("status", "queued")
-    .limit(25);
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
-  if (vErr) throw new Error(`pick_voiceover_steps_failed: ${vErr.message}`);
-  if (!voiceRows || voiceRows.length === 0) return null;
-
-  for (const row of voiceRows) {
-    const { data: sb, error: sbErr } = await supabase
-      .from("video_render_steps")
-      .select("status")
-      .eq("job_id", row.job_id)
-      .eq("step", "storyboard")
-      .maybeSingle();
-
-    if (sbErr) continue;
-    if (sb?.status === "completed") return row.job_id as string;
-  }
-
-  return null;
+  if (error) throw new Error(`pick_voiceover_steps_failed: ${error.message}`);
+  return row?.job_id ?? null;
 }
 
 /**
@@ -210,6 +200,7 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
+  // best effort seed steps
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
@@ -245,7 +236,8 @@ export async function GET(req: Request) {
     secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
     supabaseEnvOk: sb.ok,
     supabaseEnv: !sb.ok ? sb.details : undefined,
-    message: "POST will process one queued job (requires secret).",
+    message:
+      "POST will process pipeline voiceover if queued; otherwise processes one queued legacy job (requires secret).",
   });
 }
 
@@ -358,7 +350,7 @@ export async function POST(req: Request) {
         .eq("id", job.id);
     }
 
-    // 4) try voiceover if eligible (legacy-linked)
+    // 4) try voiceover if eligible (legacy-linked - păstrăm condiția veche aici)
     let voiceoverRan = false;
     if (pipelineJobId) {
       try {
