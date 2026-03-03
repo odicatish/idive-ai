@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { generateVoiceoverForJob } from "../../../lib/video/generateVoiceover";
+import { renderMp4ForJob } from "../../../lib/video/renderMp4";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -125,10 +126,14 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
 
 /**
  * MVP FINALIZER:
- * - după voiceover, marcăm pipeline ca completed și restul steps ca skipped
- * - astfel /video-status + UI nu mai rămân blocate la 17% / queued
+ * - marcăm pipeline ca completed și restul steps ca skipped
+ * - video_url = mp4Url dacă există, altfel fallback la mp3
  */
-async function finalizePipelineAsVoiceoverOnly(supabase: any, pipelineJobId: string, signedUrl: string | null) {
+async function finalizePipelineAsVoiceoverOnly(
+  supabase: any,
+  pipelineJobId: string,
+  finalUrl: string | null
+) {
   const now = new Date().toISOString();
 
   // 1) mark remaining steps skipped (best-effort)
@@ -153,7 +158,7 @@ async function finalizePipelineAsVoiceoverOnly(supabase: any, pipelineJobId: str
       .update({
         status: "completed",
         progress: 100,
-        video_url: signedUrl,
+        video_url: finalUrl,
         updated_at: now,
       })
       .eq("id", pipelineJobId);
@@ -194,18 +199,28 @@ async function processLegacyJob(supabase: any, legacyJobId: string) {
   const vo = await generateVoiceoverForJob(pipelineJobId);
   const signedUrl = extractSignedUrl(vo);
 
-  // ✅ MVP: finalize pipeline so UI doesn't stick at 17%
-  await finalizePipelineAsVoiceoverOnly(supabase, pipelineJobId, signedUrl);
+  // NEW: render MP4 after voiceover
+  let mp4Url: string | null = null;
+  try {
+    mp4Url = await renderMp4ForJob(pipelineJobId);
+  } catch (e: any) {
+    // Nu blocăm tot job-ul dacă mp4 pică; păstrăm fallback mp3.
+    console.error("MP4_RENDER_FAILED", e?.message ?? e);
+    mp4Url = null;
+  }
 
-  // ✅ important pentru UI: setăm progress + video_url pe legacy
+  // finalize pipeline (prefer mp4)
+  await finalizePipelineAsVoiceoverOnly(supabase, pipelineJobId, mp4Url || signedUrl);
+
+  // important pentru UI legacy: setăm progress + video_url (prefer mp4)
   await supabase
     .from("presenter_video_jobs")
     .update({
       status: "completed",
       progress: 100,
-      provider: "openai-tts-mvp",
+      provider: mp4Url ? "remotion-mp4" : "openai-tts-mvp",
       provider_job_id: pipelineJobId,
-      video_url: signedUrl,
+      video_url: mp4Url || signedUrl,
       updated_at: new Date().toISOString(),
     })
     .eq("id", legacyJobId);
@@ -215,6 +230,8 @@ async function processLegacyJob(supabase: any, legacyJobId: string) {
     legacyJobId,
     pipelineJobId,
     voiceUrl: signedUrl,
+    mp4Url,
+    finalUrl: mp4Url || signedUrl,
   };
 }
 

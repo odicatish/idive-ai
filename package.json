@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@remotion/renderer": "^4.0.431",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
@@ -16,6 +17,7 @@
     "openai": "^6.18.0",
     "react": "19.2.2",
     "react-dom": "19.2.2",
+    "remotion": "^4.0.431",
     "stripe": "^20.3.1"
   },
   "devDependencies": {
