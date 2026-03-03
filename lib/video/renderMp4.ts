@@ -1,12 +1,5 @@
 // lib/video/renderMp4.ts
-import { bundle } from "@remotion/bundler";
-import { getCompositions, renderMedia } from "@remotion/renderer";
 import { createClient } from "@supabase/supabase-js";
-import path from "path";
-import fs from "fs/promises";
-import os from "os";
-
-type SupabaseAdmin = ReturnType<typeof createClient>;
 
 function requireEnv(name: string) {
   const v = (process.env[name] || "").trim();
@@ -14,7 +7,7 @@ function requireEnv(name: string) {
   return v;
 }
 
-function getSupabaseAdmin(): SupabaseAdmin {
+function getSupabaseAdmin() {
   const url =
     (process.env.SUPABASE_URL || "").trim() ||
     (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
@@ -28,8 +21,16 @@ function getSupabaseAdmin(): SupabaseAdmin {
   });
 }
 
-async function getVoiceoverSignedUrl(supabase: SupabaseAdmin, jobId: string) {
-  const { data: voiceAsset, error } = await supabase
+// Render MP4 external (FFmpeg worker)
+// Required env in Vercel: VIDEO_RENDERER_URL + VIDEO_RENDERER_SECRET
+export async function renderMp4ForJob(jobId: string): Promise<string | null> {
+  const rendererUrl = requireEnv("VIDEO_RENDERER_URL"); // e.g. https://your-worker.up.railway.app
+  const rendererSecret = requireEnv("VIDEO_RENDERER_SECRET");
+
+  const supabase = getSupabaseAdmin();
+
+  // 1) find voiceover asset
+  const { data: voiceAsset, error } = await (supabase as any)
     .from("video_assets")
     .select("storage_bucket, storage_path")
     .eq("job_id", jobId)
@@ -39,6 +40,7 @@ async function getVoiceoverSignedUrl(supabase: SupabaseAdmin, jobId: string) {
 
   if (error || !voiceAsset) throw new Error("Voiceover asset not found.");
 
+  // 2) signed URL for mp3 (1h)
   const { data: signed, error: sErr } = await supabase.storage
     .from(voiceAsset.storage_bucket)
     .createSignedUrl(voiceAsset.storage_path, 60 * 60);
@@ -46,114 +48,46 @@ async function getVoiceoverSignedUrl(supabase: SupabaseAdmin, jobId: string) {
   if (sErr) throw new Error(`Could not sign voiceover: ${sErr.message}`);
   if (!signed?.signedUrl) throw new Error("Could not create signed URL for voiceover.");
 
-  return signed.signedUrl;
-}
-
-export async function renderMp4ForJob(jobId: string): Promise<string | null> {
-  // env guard (helps catch missing deps early)
-  requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  const supabase = getSupabaseAdmin();
-
-  // 1) signed URL for mp3
-  const audioUrl = await getVoiceoverSignedUrl(supabase, jobId);
-
-  // 2) temp workdir
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remotion-"));
-  const entryPath = path.join(tmpDir, "index.tsx");
-
-  // 3) write a minimal Remotion project on the fly (one composition)
-  const entry = `
-    import React from "react";
-    import { Composition, AbsoluteFill, Audio } from "remotion";
-
-    const Video: React.FC<{ audioUrl: string }> = ({ audioUrl }) => {
-      return (
-        <AbsoluteFill style={{ backgroundColor: "#111", justifyContent: "center", alignItems: "center" }}>
-          <div style={{ color: "white", fontSize: 64, fontWeight: 800, textAlign: "center", padding: 60 }}>
-            Your Product Video
-          </div>
-          <Audio src={audioUrl} />
-        </AbsoluteFill>
-      );
-    };
-
-    export const RemotionRoot: React.FC = () => {
-      return (
-        <>
-          <Composition
-            id="Ad"
-            component={Video}
-            width={1080}
-            height={1080}
-            fps={30}
-            durationInFrames={900}
-            defaultProps={{ audioUrl: "${audioUrl}" }}
-          />
-        </>
-      );
-    };
-  `;
-  await fs.writeFile(entryPath, entry, "utf8");
-
-  // 4) bundle
-  const serveUrl = await bundle({
-    entryPoint: entryPath,
-    webpackOverride: (config) => config,
+  // 3) call external renderer (it will upload mp4 to Supabase + insert video_assets)
+  const r = await fetch(`${rendererUrl.replace(/\/$/, "")}/render-mp4`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${rendererSecret}`,
+    },
+    body: JSON.stringify({
+      jobId,
+      audioUrl: signed.signedUrl,
+      // where to upload
+      output: {
+        bucket: "renders",
+        path: `videos/${jobId}.mp4`,
+      },
+    }),
   });
 
-  // 5) get composition metadata
-  const comps = await getCompositions(serveUrl, {
-    inputProps: {},
-  });
+  const txt = await r.text().catch(() => "");
+  if (!r.ok) {
+    throw new Error(`renderer_failed_${r.status}: ${txt || "no_body"}`);
+  }
 
-  const comp = comps.find((c) => c.id === "Ad");
-  if (!comp) throw new Error('Remotion composition "Ad" not found.');
+  let json: any = null;
+  try {
+    json = txt ? JSON.parse(txt) : null;
+  } catch {
+    json = null;
+  }
 
-  // 6) render mp4
-  const outputPath = path.join(tmpDir, `${jobId}.mp4`);
-  await renderMedia({
-    serveUrl,
-    composition: comp,
-    codec: "h264",
-    outputLocation: outputPath,
-    inputProps: {},
-  });
+  // optional: renderer can return mp4Url; if not, we sign ourselves
+  const mp4UrlFromRenderer = json?.mp4Url && typeof json.mp4Url === "string" ? json.mp4Url : null;
+  if (mp4UrlFromRenderer) return mp4UrlFromRenderer;
 
-  // 7) upload mp4 to renders bucket
-  const fileBuffer = await fs.readFile(outputPath);
+  // 4) if renderer didn't sign, create signed url (7 days)
   const storagePath = `videos/${jobId}.mp4`;
-
-  const { error: upErr } = await supabase.storage.from("renders").upload(storagePath, fileBuffer, {
-    contentType: "video/mp4",
-    upsert: true,
-    cacheControl: "3600",
-  });
-
-  if (upErr) throw new Error(`mp4_upload_failed: ${upErr.message}`);
-
-  // 8) signed URL for mp4 (7 days)
   const { data: finalSigned, error: signErr } = await supabase.storage
     .from("renders")
     .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
 
   if (signErr) throw new Error(`mp4_signed_url_failed: ${signErr.message}`);
-
-  const mp4Url = finalSigned?.signedUrl ?? null;
-
-  // 9) insert asset row
-  const { error: assetErr } = await supabase.from("video_assets").insert({
-    job_id: jobId,
-    asset_type: "video_mp4",
-    provider: "remotion",
-    status: "completed",
-    storage_bucket: "renders",
-    storage_path: storagePath,
-    public_url: mp4Url,
-    meta: { kind: "remotion_minimal_ad_v1" },
-  });
-
-  if (assetErr) throw new Error(`mp4_asset_insert_failed: ${assetErr.message}`);
-
-  return mp4Url;
+  return finalSigned?.signedUrl ?? null;
 }
