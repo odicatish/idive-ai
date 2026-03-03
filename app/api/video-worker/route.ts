@@ -67,8 +67,7 @@ function supabaseAdminSafe() {
   const projectRef = (() => {
     try {
       const u = new URL(usedUrl);
-      const host = u.hostname;
-      return host.split(".")[0] || null;
+      return u.hostname.split(".")[0] || null;
     } catch {
       return null;
     }
@@ -76,8 +75,6 @@ function supabaseAdminSafe() {
 
   return { ok: true as const, client, usedUrl, projectRef };
 }
-
-// ---- pipeline helpers ----
 
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   const nowIso = new Date().toISOString();
@@ -101,7 +98,7 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
 
   const { data: pipelineJob, error: fetchErr } = await supabase
     .from("video_render_jobs")
-    .select("id, legacy_job_id")
+    .select("id,legacy_job_id")
     .eq("legacy_job_id", legacyJob.id)
     .maybeSingle();
 
@@ -116,128 +113,48 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   return pipelineJob.id as string;
 }
 
-async function pickPipelineJobForVoiceover(supabase: any) {
-  const { data: voiceRows, error: vErr } = await supabase
+/**
+ * TEMP MVP:
+ * Ca să nu ne blocăm în storyboard acum, îl marcăm completed automat
+ * (doar pentru a putea rula voiceover și să vezi progres + fișier în storage).
+ */
+async function forceStoryboardCompleted(supabase: any, pipelineJobId: string) {
+  const nowIso = new Date().toISOString();
+
+  // dacă există storyboard step și nu e completed, îl completăm
+  await supabase
     .from("video_render_steps")
-    .select("job_id")
-    .eq("step", "voiceover")
-    .eq("status", "queued")
-    .limit(25);
-
-  if (vErr) throw new Error(`pick_voiceover_steps_failed: ${vErr.message}`);
-  if (!voiceRows || voiceRows.length === 0) return null;
-
-  for (const row of voiceRows) {
-    const { data: sb, error: sbErr } = await supabase
-      .from("video_render_steps")
-      .select("status")
-      .eq("job_id", row.job_id)
-      .eq("step", "storyboard")
-      .maybeSingle();
-
-    if (sbErr) continue;
-    if (sb?.status === "completed") return row.job_id as string;
-  }
-
-  return null;
+    .update({
+      status: "completed",
+      progress: 100,
+      started_at: nowIso,
+      completed_at: nowIso,
+      updated_at: nowIso,
+      error_message: null,
+    })
+    .eq("job_id", pipelineJobId)
+    .eq("step", "storyboard")
+    .neq("status", "completed");
 }
 
-async function syncLegacyProgressFromPipeline(supabase: any, pipelineJobId: string, patch: any) {
-  const { data: pj } = await supabase
-    .from("video_render_jobs")
-    .select("legacy_job_id")
-    .eq("id", pipelineJobId)
-    .maybeSingle();
-
-  const legacyJobId = pj?.legacy_job_id;
-  if (!legacyJobId) return;
-
+async function setLegacyProgress(supabase: any, legacyJobId: string, patch: any) {
   await supabase
     .from("presenter_video_jobs")
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq("id", legacyJobId);
 }
 
-async function runPipelineVoiceoverIfAny(supabase: any) {
-  const jobId = await pickPipelineJobForVoiceover(supabase);
-  if (!jobId) return null;
+async function getVoiceAssetUrl(supabase: any, pipelineJobId: string) {
+  const { data } = await supabase
+    .from("video_assets")
+    .select("public_url,storage_bucket,storage_path,created_at")
+    .eq("job_id", pipelineJobId)
+    .eq("asset_type", "audio_voice")
+    .order("created_at", { ascending: false })
+    .limit(1);
 
-  const nowIso = new Date().toISOString();
-
-  // lock step
-  const { data: lockedStep, error: lockErr } = await supabase
-    .from("video_render_steps")
-    .update({
-      status: "processing",
-      progress: 5,
-      started_at: nowIso,
-      updated_at: nowIso,
-      error_message: null,
-    })
-    .eq("job_id", jobId)
-    .eq("step", "voiceover")
-    .eq("status", "queued")
-    .select("job_id, step, status")
-    .maybeSingle();
-
-  if (lockErr) throw new Error(`voiceover_lock_failed: ${lockErr.message}`);
-  if (!lockedStep) return null;
-
-  // reflect in legacy UI immediately
-  await syncLegacyProgressFromPipeline(supabase, jobId, {
-    status: "processing",
-    progress: 15,
-    provider: "openai-tts",
-    error: null,
-  });
-
-  try {
-    await generateVoiceoverForJob(jobId);
-
-    await supabase
-      .from("video_render_steps")
-      .update({
-        status: "completed",
-        progress: 100,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("job_id", jobId)
-      .eq("step", "voiceover");
-
-    await supabase
-      .from("video_render_jobs")
-      .update({ progress: 30, updated_at: new Date().toISOString() })
-      .eq("id", jobId);
-
-    // legacy progress moves too (UI now updates)
-    await syncLegacyProgressFromPipeline(supabase, jobId, {
-      status: "processing",
-      progress: 30,
-      provider: "openai-tts",
-    });
-
-    return jobId;
-  } catch (e: any) {
-    const msg = e?.message ?? String(e);
-
-    await supabase
-      .from("video_render_steps")
-      .update({
-        status: "failed",
-        error_message: msg,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("job_id", jobId)
-      .eq("step", "voiceover");
-
-    await syncLegacyProgressFromPipeline(supabase, jobId, {
-      status: "failed",
-      error: `voiceover_error: ${msg}`,
-    });
-
-    throw e;
-  }
+  const row = data?.[0];
+  return row?.public_url || null;
 }
 
 export async function GET(req: Request) {
@@ -252,7 +169,7 @@ export async function GET(req: Request) {
     secretConfigured: !!expected,
     secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
     supabaseEnvOk: sb.ok,
-    message: "POST will process pipeline voiceover OR one queued legacy job (requires secret).",
+    message: "POST will process ONE queued legacy job (requires secret).",
   });
 }
 
@@ -271,26 +188,16 @@ export async function POST(req: Request) {
     const usedUrl = sb.usedUrl;
     const projectRef = sb.projectRef;
 
-    // 0) PIPELINE-FIRST voiceover
-    const pipelineJobId = await runPipelineVoiceoverIfAny(supabase);
-    if (pipelineJobId) {
-      return NextResponse.json({
-        ok: true,
-        didWork: true,
-        ran: "pipeline_voiceover",
-        pipelineJobId,
-        debug: { usedUrl, projectRef },
-      });
-    }
-
-    // 1) fallback: take one legacy queued job and ensure pipeline exists
-    const { data: job } = await supabase
+    // 1) pick next queued legacy job
+    const { data: job, error: pickErr } = await supabase
       .from("presenter_video_jobs")
       .select("*")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
+
+    if (pickErr) return jsonError(500, "job_pick_failed", { message: pickErr.message, usedUrl, projectRef });
 
     if (!job) {
       return NextResponse.json({
@@ -301,34 +208,73 @@ export async function POST(req: Request) {
       });
     }
 
-    // lock legacy
+    // 2) lock legacy job
     const nowIso = new Date().toISOString();
-    const { data: locked } = await supabase
+    const { data: locked, error: lockErr } = await supabase
       .from("presenter_video_jobs")
-      .update({ status: "processing", progress: 5, error: null, updated_at: nowIso })
+      .update({
+        status: "processing",
+        progress: 5,
+        error: null,
+        updated_at: nowIso,
+      })
       .eq("id", job.id)
       .eq("status", "queued")
       .select("id")
       .maybeSingle();
 
+    if (lockErr) return jsonError(500, "job_lock_failed", { message: lockErr.message, usedUrl, projectRef });
     if (!locked) {
       return NextResponse.json({
         ok: true,
         didWork: false,
-        message: "Legacy job already taken by another run.",
+        message: "Job already taken by another run.",
         debug: { usedUrl, projectRef },
       });
     }
 
-    // ensure pipeline now
-    const createdPipelineId = await ensurePipelineJobForLegacyJob(supabase, job);
+    // 3) ensure pipeline job exists
+    const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
+
+    // 4) TEMP: force storyboard completed so voiceover can run
+    await forceStoryboardCompleted(supabase, pipelineJobId);
+
+    // 5) progress bump so UI moves
+    await setLegacyProgress(supabase, job.id, {
+      status: "processing",
+      progress: 15,
+      provider: "openai-tts",
+      provider_job_id: pipelineJobId,
+    });
+
+    // 6) run voiceover (this uploads mp3 + creates video_assets row)
+    await generateVoiceoverForJob(pipelineJobId);
+
+    await setLegacyProgress(supabase, job.id, {
+      status: "processing",
+      progress: 60,
+      provider: "openai-tts",
+      provider_job_id: pipelineJobId,
+    });
+
+    // 7) attach "Open video" link (for now: mp3 signed url)
+    const voiceUrl = await getVoiceAssetUrl(supabase, pipelineJobId);
+
+    await setLegacyProgress(supabase, job.id, {
+      status: "completed",
+      progress: 100,
+      provider: "openai-tts",
+      provider_job_id: pipelineJobId,
+      video_url: voiceUrl, // TEMP: link to voiceover file
+    });
 
     return NextResponse.json({
       ok: true,
       didWork: true,
-      ran: "legacy_link_pipeline",
+      ran: "legacy_voiceover_mvp",
       legacyJobId: job.id,
-      pipelineJobId: createdPipelineId,
+      pipelineJobId,
+      voiceUrl,
       debug: { usedUrl, projectRef },
     });
   } catch (e: any) {
