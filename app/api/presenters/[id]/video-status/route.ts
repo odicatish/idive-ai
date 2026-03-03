@@ -48,16 +48,20 @@ function isCompleted(s: string) {
 }
 
 function isProcessing(s: string) {
-  return normStatus(s) === "processing" || normStatus(s) === "running";
+  const v = normStatus(s);
+  return v === "processing" || v === "running";
 }
 
+/**
+ * Progres "real" pipeline (media pe pași).
+ * Îl păstrăm doar pentru debug / viitor.
+ */
 function computePipelineProgress(steps: StepRow[]) {
   if (!steps || steps.length === 0) {
     return { status: "queued", progress: 0 };
   }
 
   if (steps.some((x) => isFailed(x.status))) {
-    // păstrăm progress calculat, dar status failed
     const p = Math.max(
       0,
       Math.min(
@@ -106,6 +110,27 @@ function computePipelineProgress(steps: StepRow[]) {
   return { status: anyProcessing ? "processing" : "queued", progress: p };
 }
 
+/**
+ * ✅ MVP UI mapping:
+ * Considerăm job "gata" când VOICEOVER e completed.
+ * Altfel: queued/processing pe baza voiceover.
+ */
+function computeMvpUiFromVoiceover(steps: StepRow[]) {
+  const vo = steps?.find((s) => s.step === "voiceover");
+  const st = normStatus(vo?.status);
+
+  if (st === "completed") return { status: "completed", progress: 100 };
+  if (st === "failed") return { status: "failed", progress: Math.max(0, Number(vo?.progress ?? 0)) };
+
+  if (st === "processing" || st === "running") {
+    // dacă nu avem progress numeric, dăm un minim ca să pară "în mișcare"
+    const p = Number(vo?.progress ?? 10);
+    return { status: "processing", progress: Math.max(1, Math.min(99, p)) };
+  }
+
+  return { status: "queued", progress: 0 };
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
@@ -129,10 +154,12 @@ export async function GET(req: Request, context: any) {
   const url = new URL(req.url);
   const jobId = (url.searchParams.get("jobId") || "").trim();
 
-  // 1) legacy job (latest) – asta există în UI
+  // 1) legacy job (latest)
   let q = supabase
     .from("presenter_video_jobs")
-    .select("id,presenter_id,script_id,script_version,status,progress,provider,provider_job_id,video_url,error,created_at,updated_at")
+    .select(
+      "id,presenter_id,script_id,script_version,status,progress,provider,provider_job_id,video_url,error,created_at,updated_at"
+    )
     .eq("presenter_id", presenterId);
 
   if (jobId) q = q.eq("id", jobId);
@@ -151,7 +178,6 @@ export async function GET(req: Request, context: any) {
     .maybeSingle();
 
   if (pjErr) {
-    // nu crăpăm endpointul
     return NextResponse.json({
       job: {
         id: job.id,
@@ -172,6 +198,7 @@ export async function GET(req: Request, context: any) {
     });
   }
 
+  // dacă n-avem pipeline link, întoarcem legacy direct (UI-ul tău deja știe să-l afișeze)
   if (!pipelineJob?.id) {
     return NextResponse.json({
       job: {
@@ -193,7 +220,7 @@ export async function GET(req: Request, context: any) {
     });
   }
 
-  // 3) pipeline steps (pentru progres real)
+  // 3) pipeline steps
   const { data: stepsRaw, error: stepsErr } = await supabase
     .from("video_render_steps")
     .select("step,status,progress,started_at,completed_at,updated_at,error_message")
@@ -201,39 +228,8 @@ export async function GET(req: Request, context: any) {
     .order("step", { ascending: true });
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
-  if (stepsErr) {
-    // fallback la pipelineJob.progress dacă steps fail
-    const p = Number(pipelineJob.progress ?? 0);
-    return NextResponse.json({
-      job: {
-        id: job.id,
-        presenterId: job.presenter_id,
-        scriptId: job.script_id,
-        scriptVersion: job.script_version,
-        status: pipelineJob.status ?? job.status,
-        progress: p,
-        provider: "pipeline",
-        providerJobId: pipelineJob.id,
-        videoUrl: job.video_url ?? null,
-        error: job.error ?? null,
-        createdAt: job.created_at,
-        updatedAt: job.updated_at,
-      },
-      pipeline: {
-        id: pipelineJob.id,
-        status: pipelineJob.status ?? "processing",
-        progress: p,
-        steps: [],
-        videoUrl: null,
-        legacy_job_id: pipelineJob.legacy_job_id,
-      },
-      debug: { note: "steps_fetch_failed", message: stepsErr.message },
-    });
-  }
 
-  const computed = computePipelineProgress(steps);
-
-  // 4) ia “videoUrl” din assets (pentru MVP: voiceover mp3)
+  // 4) ia “videoUrl” din assets (MVP: voiceover mp3)
   const { data: asset, error: aErr } = await supabase
     .from("video_assets")
     .select("public_url,storage_bucket,storage_path,asset_type,status,created_at")
@@ -244,13 +240,44 @@ export async function GET(req: Request, context: any) {
     .limit(1)
     .maybeSingle();
 
-  // nu crăpăm dacă nu există încă asset
   const pipelineVideoUrl = !aErr ? (asset?.public_url ?? null) : null;
 
-  // 5) IMPORTANT: pentru UI, returnăm progresul pipeline ca progres job
-  // ca să urce în Studio (chiar dacă presenter_video_jobs nu e actualizat încă).
-  const jobStatusForUi = computed.status;
-  const jobProgressForUi = computed.progress;
+  // Dacă steps fail -> fallback la legacy, dar păstrăm providerJobId ca pipeline id
+  if (stepsErr) {
+    const p = Number(job.progress ?? pipelineJob.progress ?? 0);
+
+    return NextResponse.json({
+      job: {
+        id: job.id,
+        presenterId: job.presenter_id,
+        scriptId: job.script_id,
+        scriptVersion: job.script_version,
+        status: job.status,
+        progress: p,
+        provider: job.provider ?? "pipeline",
+        providerJobId: pipelineJob.id,
+        videoUrl: job.video_url ?? pipelineVideoUrl ?? null,
+        error: job.error ?? null,
+        createdAt: job.created_at,
+        updatedAt: job.updated_at,
+      },
+      pipeline: {
+        id: pipelineJob.id,
+        status: pipelineJob.status ?? "processing",
+        progress: Number(pipelineJob.progress ?? 0),
+        steps: [],
+        videoUrl: pipelineVideoUrl,
+        legacy_job_id: pipelineJob.legacy_job_id,
+      },
+      debug: { note: "steps_fetch_failed", message: stepsErr.message },
+    });
+  }
+
+  // ✅ MVP UI: după voiceover => 100%
+  const mvpUi = computeMvpUiFromVoiceover(steps);
+
+  // păstrăm și progresul "real" pipeline doar ca debug/viitor
+  const computedPipeline = computePipelineProgress(steps);
 
   return NextResponse.json({
     job: {
@@ -258,8 +285,8 @@ export async function GET(req: Request, context: any) {
       presenterId: job.presenter_id,
       scriptId: job.script_id,
       scriptVersion: job.script_version,
-      status: jobStatusForUi,
-      progress: jobProgressForUi,
+      status: mvpUi.status,
+      progress: mvpUi.progress,
       provider: "pipeline",
       providerJobId: pipelineJob.id,
       videoUrl: pipelineVideoUrl ?? job.video_url ?? null,
@@ -269,11 +296,14 @@ export async function GET(req: Request, context: any) {
     },
     pipeline: {
       id: pipelineJob.id,
-      status: computed.status,
-      progress: computed.progress,
+      status: computedPipeline.status,
+      progress: computedPipeline.progress,
       steps,
       videoUrl: pipelineVideoUrl,
       legacy_job_id: pipelineJob.legacy_job_id,
+    },
+    debug: {
+      uiMode: "mvp_voiceover_complete_is_done",
     },
   });
 }
