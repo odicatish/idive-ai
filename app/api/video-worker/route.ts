@@ -76,6 +76,16 @@ function supabaseAdminSafe() {
   return { ok: true as const, client, usedUrl, projectRef };
 }
 
+// ✅ acceptă orice formă de return de la generateVoiceoverForJob
+function extractSignedUrl(vo: any): string | null {
+  if (!vo) return null;
+  if (typeof vo === "string") return vo; // dacă funcția întoarce direct url-ul
+  if (typeof vo?.signedUrl === "string") return vo.signedUrl;
+  if (typeof vo?.voiceUrl === "string") return vo.voiceUrl;
+  if (typeof vo?.url === "string") return vo.url;
+  return null;
+}
+
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   const nowIso = new Date().toISOString();
 
@@ -105,12 +115,67 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // best-effort
+  // best-effort seed steps
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
 
   return pipelineJob.id as string;
+}
+
+async function processLegacyJob(supabase: any, legacyJobId: string) {
+  const { data: job, error: fetchErr } = await supabase
+    .from("presenter_video_jobs")
+    .select("*")
+    .eq("id", legacyJobId)
+    .maybeSingle();
+
+  if (fetchErr) throw new Error(`legacy_fetch_failed: ${fetchErr.message}`);
+  if (!job) throw new Error("legacy_job_not_found");
+
+  // lock only if queued
+  const nowIso = new Date().toISOString();
+  const { data: locked, error: lockErr } = await supabase
+    .from("presenter_video_jobs")
+    .update({
+      status: "processing",
+      progress: 5,
+      error: null,
+      updated_at: nowIso,
+    })
+    .eq("id", legacyJobId)
+    .eq("status", "queued")
+    .select("*")
+    .maybeSingle();
+
+  if (lockErr) throw new Error(`legacy_lock_failed: ${lockErr.message}`);
+  if (!locked) return { didWork: false as const, reason: "legacy_not_queued_anymore" };
+
+  // link pipeline job + generate voiceover
+  const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, locked);
+
+  const vo = await generateVoiceoverForJob(pipelineJobId);
+  const signedUrl = extractSignedUrl(vo);
+
+  // ✅ important pentru UI: setăm progress + video_url
+  await supabase
+    .from("presenter_video_jobs")
+    .update({
+      status: "completed",
+      progress: 100,
+      provider: "openai-tts-mvp",
+      provider_job_id: pipelineJobId,
+      video_url: signedUrl,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", legacyJobId);
+
+  return {
+    didWork: true as const,
+    legacyJobId,
+    pipelineJobId,
+    voiceUrl: signedUrl,
+  };
 }
 
 export async function GET(req: Request) {
@@ -125,7 +190,7 @@ export async function GET(req: Request) {
     secretConfigured: !!expected,
     secretMatches: !!expected && !!secret && timingSafeEqual(secret, expected),
     supabaseEnvOk: sb.ok,
-    message: "POST will process ONE queued legacy job (requires secret).",
+    message: "POST will process ONE queued legacy job (or a specific jobId) — requires secret.",
   });
 }
 
@@ -141,76 +206,36 @@ export async function POST(req: Request) {
     if (!sb.ok) return jsonError(500, sb.error, sb.details);
 
     const supabase = sb.client;
-    const usedUrl = sb.usedUrl;
-    const projectRef = sb.projectRef;
 
-    // 1) pick next queued legacy job
+    // ✅ jobId optional (?jobId=uuid)
+    let jobId = "";
+    try {
+      const url = new URL(req.url);
+      jobId = (url.searchParams.get("jobId") || "").trim();
+    } catch {}
+
+    if (jobId) {
+      const out = await processLegacyJob(supabase, jobId);
+      return NextResponse.json({ ok: true, ...out, ran: "legacy_by_jobId" });
+    }
+
+    // pick next queued legacy job
     const { data: job, error: pickErr } = await supabase
       .from("presenter_video_jobs")
-      .select("*")
+      .select("id")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
 
-    if (pickErr) return jsonError(500, "job_pick_failed", { message: pickErr.message, usedUrl, projectRef });
+    if (pickErr) return jsonError(500, "job_pick_failed", pickErr.message);
 
-    if (!job) {
-      return NextResponse.json({
-        ok: true,
-        didWork: false,
-        message: "No queued jobs.",
-        debug: { usedUrl, projectRef },
-      });
+    if (!job?.id) {
+      return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs." });
     }
 
-    const nowIso = new Date().toISOString();
-
-    // 2) lock it
-    const { data: locked, error: lockErr } = await supabase
-      .from("presenter_video_jobs")
-      .update({ status: "processing", progress: 5, error: null, updated_at: nowIso })
-      .eq("id", job.id)
-      .eq("status", "queued")
-      .select("id,presenter_id,script_id,script_version,created_by,status,progress")
-      .maybeSingle();
-
-    if (lockErr) return jsonError(500, "job_lock_failed", { message: lockErr.message, usedUrl, projectRef });
-    if (!locked) {
-      return NextResponse.json({ ok: true, didWork: false, message: "Job already taken.", debug: { usedUrl, projectRef } });
-    }
-
-    // 3) ensure pipeline job
-    const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
-
-    // 4) update progress (UI)
-    await supabase.from("presenter_video_jobs").update({ progress: 20, updated_at: new Date().toISOString() }).eq("id", job.id);
-
-    // 5) generate voiceover (real)
-    const voiceUrl = await generateVoiceoverForJob(pipelineJobId);
-
-    // 6) IMPORTANT: mark legacy job completed + set video_url (temporary = voiceUrl)
-    await supabase
-      .from("presenter_video_jobs")
-      .update({
-        status: "completed",
-        progress: 100,
-        video_url: voiceUrl || null,
-        provider: "openai-tts-mvp",
-        provider_job_id: pipelineJobId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id);
-
-    return NextResponse.json({
-      ok: true,
-      didWork: true,
-      ran: "legacy_voiceover_mvp",
-      legacyJobId: job.id,
-      pipelineJobId,
-      voiceUrl: voiceUrl || null,
-      debug: { usedUrl, projectRef },
-    });
+    const out = await processLegacyJob(supabase, job.id);
+    return NextResponse.json({ ok: true, ...out, ran: "legacy_voiceover_mvp" });
   } catch (e: any) {
     console.error("VIDEO_WORKER_ERROR", e);
     return jsonError(500, "internal_error", e?.message ?? String(e));
