@@ -16,7 +16,6 @@ export default async function AdminWorkerPage() {
   const userEmail = (data.user.email || "").trim().toLowerCase();
 
   if (!adminEmail || userEmail !== adminEmail) {
-    // nu expunem faptul că există pagina
     redirect("/login?error=" + encodeURIComponent("Unauthorized"));
   }
 

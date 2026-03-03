@@ -19,9 +19,7 @@ export default function RunWorkerButton() {
       });
 
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(json?.error || `Request failed (${res.status})`);
-      }
+      if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
 
       setResult(json);
     } catch (e: any) {
