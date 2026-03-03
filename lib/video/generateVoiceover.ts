@@ -37,7 +37,11 @@ function getProjectRefFromUrl(url: string) {
   }
 }
 
-export async function generateVoiceoverForJob(jobId: string) {
+/**
+ * Generates a voiceover MP3 for a pipeline render job and uploads it to Storage.
+ * Returns a signed URL (string) or null (if cannot be generated).
+ */
+export async function generateVoiceoverForJob(jobId: string): Promise<string | null> {
   const OPENAI_API_KEY = requireEnv("OPENAI_API_KEY");
 
   const supabase = makeSupabaseAdmin();
@@ -72,7 +76,7 @@ export async function generateVoiceoverForJob(jobId: string) {
   const text = String(script.content || "").trim();
   if (!text) throw new Error("Script is empty (nothing to synthesize).");
 
-  // 3) mark step processing
+  // 3) mark step processing (best-effort; if row missing, fail loudly so we fix seed)
   const now = new Date().toISOString();
   const { error: stepStartErr } = await supabase
     .from("video_render_steps")
@@ -81,6 +85,7 @@ export async function generateVoiceoverForJob(jobId: string) {
       started_at: now,
       progress: 5,
       updated_at: now,
+      error_message: null,
     } as any)
     .eq("job_id", jobId)
     .eq("step", "voiceover");
@@ -103,24 +108,24 @@ export async function generateVoiceoverForJob(jobId: string) {
   const bucket = "renders";
   const path = `voiceovers/${jobId}.mp3`;
 
-  const { error: uploadError } = await supabase.storage
-    .from(bucket)
-    .upload(path, buffer, {
-      contentType: "audio/mpeg",
-      upsert: true,
-      cacheControl: "3600",
-    });
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, buffer, {
+    contentType: "audio/mpeg",
+    upsert: true,
+    cacheControl: "3600",
+  });
 
   if (uploadError) throw new Error(`storage_upload_failed: ${uploadError.message}`);
 
-  // 6) signed url (works for private buckets)
+  // 6) signed url
   const { data: signed, error: signedErr } = await supabase.storage
     .from(bucket)
     .createSignedUrl(path, 60 * 60 * 24 * 7);
 
   if (signedErr) throw new Error(`signed_url_failed: ${signedErr.message}`);
 
-  // 7) create asset
+  const signedUrl = signed?.signedUrl ?? null;
+
+  // 7) create asset (best-effort, but if fails we want to know)
   const { error: assetErr } = await supabase.from("video_assets").insert(
     {
       job_id: jobId,
@@ -129,7 +134,7 @@ export async function generateVoiceoverForJob(jobId: string) {
       status: "completed",
       storage_bucket: bucket,
       storage_path: path,
-      public_url: signed?.signedUrl ?? null,
+      public_url: signedUrl,
       meta: { projectRef, usedUrl },
     } as any
   );
@@ -151,11 +156,5 @@ export async function generateVoiceoverForJob(jobId: string) {
 
   if (stepDoneErr) throw new Error(`voiceover_step_complete_failed: ${stepDoneErr.message}`);
 
-  return {
-    ok: true as const,
-    bucket,
-    path,
-    signedUrl: signed?.signedUrl ?? null,
-    debug: { projectRef, usedUrl },
-  };
+  return signedUrl;
 }

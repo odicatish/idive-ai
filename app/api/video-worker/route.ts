@@ -98,63 +98,19 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
 
   const { data: pipelineJob, error: fetchErr } = await supabase
     .from("video_render_jobs")
-    .select("id,legacy_job_id")
+    .select("id")
     .eq("legacy_job_id", legacyJob.id)
     .maybeSingle();
 
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // seed steps (best-effort)
+  // best-effort
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
 
   return pipelineJob.id as string;
-}
-
-/**
- * TEMP MVP:
- * Ca să nu ne blocăm în storyboard acum, îl marcăm completed automat
- * (doar pentru a putea rula voiceover și să vezi progres + fișier în storage).
- */
-async function forceStoryboardCompleted(supabase: any, pipelineJobId: string) {
-  const nowIso = new Date().toISOString();
-
-  // dacă există storyboard step și nu e completed, îl completăm
-  await supabase
-    .from("video_render_steps")
-    .update({
-      status: "completed",
-      progress: 100,
-      started_at: nowIso,
-      completed_at: nowIso,
-      updated_at: nowIso,
-      error_message: null,
-    })
-    .eq("job_id", pipelineJobId)
-    .eq("step", "storyboard")
-    .neq("status", "completed");
-}
-
-async function setLegacyProgress(supabase: any, legacyJobId: string, patch: any) {
-  await supabase
-    .from("presenter_video_jobs")
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq("id", legacyJobId);
-}
-
-async function getVoiceAssetUrl(supabase: any, pipelineJobId: string) {
-  const { data } = await supabase
-    .from("video_assets")
-    .select("public_url,storage_bucket,storage_path,created_at")
-    .eq("job_id", pipelineJobId)
-    .eq("asset_type", "audio_voice")
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  const row = data?.[0];
-  return row?.public_url || null;
 }
 
 export async function GET(req: Request) {
@@ -208,65 +164,43 @@ export async function POST(req: Request) {
       });
     }
 
-    // 2) lock legacy job
     const nowIso = new Date().toISOString();
+
+    // 2) lock it
     const { data: locked, error: lockErr } = await supabase
       .from("presenter_video_jobs")
-      .update({
-        status: "processing",
-        progress: 5,
-        error: null,
-        updated_at: nowIso,
-      })
+      .update({ status: "processing", progress: 5, error: null, updated_at: nowIso })
       .eq("id", job.id)
       .eq("status", "queued")
-      .select("id")
+      .select("id,presenter_id,script_id,script_version,created_by,status,progress")
       .maybeSingle();
 
     if (lockErr) return jsonError(500, "job_lock_failed", { message: lockErr.message, usedUrl, projectRef });
     if (!locked) {
-      return NextResponse.json({
-        ok: true,
-        didWork: false,
-        message: "Job already taken by another run.",
-        debug: { usedUrl, projectRef },
-      });
+      return NextResponse.json({ ok: true, didWork: false, message: "Job already taken.", debug: { usedUrl, projectRef } });
     }
 
-    // 3) ensure pipeline job exists
+    // 3) ensure pipeline job
     const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, job);
 
-    // 4) TEMP: force storyboard completed so voiceover can run
-    await forceStoryboardCompleted(supabase, pipelineJobId);
+    // 4) update progress (UI)
+    await supabase.from("presenter_video_jobs").update({ progress: 20, updated_at: new Date().toISOString() }).eq("id", job.id);
 
-    // 5) progress bump so UI moves
-    await setLegacyProgress(supabase, job.id, {
-      status: "processing",
-      progress: 15,
-      provider: "openai-tts",
-      provider_job_id: pipelineJobId,
-    });
+    // 5) generate voiceover (real)
+    const voiceUrl = await generateVoiceoverForJob(pipelineJobId);
 
-    // 6) run voiceover (this uploads mp3 + creates video_assets row)
-    await generateVoiceoverForJob(pipelineJobId);
-
-    await setLegacyProgress(supabase, job.id, {
-      status: "processing",
-      progress: 60,
-      provider: "openai-tts",
-      provider_job_id: pipelineJobId,
-    });
-
-    // 7) attach "Open video" link (for now: mp3 signed url)
-    const voiceUrl = await getVoiceAssetUrl(supabase, pipelineJobId);
-
-    await setLegacyProgress(supabase, job.id, {
-      status: "completed",
-      progress: 100,
-      provider: "openai-tts",
-      provider_job_id: pipelineJobId,
-      video_url: voiceUrl, // TEMP: link to voiceover file
-    });
+    // 6) IMPORTANT: mark legacy job completed + set video_url (temporary = voiceUrl)
+    await supabase
+      .from("presenter_video_jobs")
+      .update({
+        status: "completed",
+        progress: 100,
+        video_url: voiceUrl || null,
+        provider: "openai-tts-mvp",
+        provider_job_id: pipelineJobId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", job.id);
 
     return NextResponse.json({
       ok: true,
@@ -274,7 +208,7 @@ export async function POST(req: Request) {
       ran: "legacy_voiceover_mvp",
       legacyJobId: job.id,
       pipelineJobId,
-      voiceUrl,
+      voiceUrl: voiceUrl || null,
       debug: { usedUrl, projectRef },
     });
   } catch (e: any) {
