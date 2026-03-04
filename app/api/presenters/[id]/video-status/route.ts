@@ -53,8 +53,7 @@ function isProcessing(s: string) {
 }
 
 /**
- * Progres "real" pipeline (media pe pași).
- * Îl păstrăm doar pentru debug / viitor.
+ * Progres "real" pipeline (media pe pași). (debug/viitor)
  */
 function computePipelineProgress(steps: StepRow[]) {
   if (!steps || steps.length === 0) {
@@ -226,25 +225,33 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ preferăm MP4, fallback pe audio (robust: nu crash dacă assets query dă eroare)
-  let pipelineVideoUrl: string | null = null;
-  let assetsDebug: any = {};
+  // 4) ✅ preferăm MP4 din Storage (NU din video_assets, fiindcă asset_type e ENUM și "video_mp4" nu e acceptat)
+  const mp4Bucket = "renders";
+  const mp4Path = `videos/${pipelineJob.id}.mp4`;
 
-  const { data: assetMp4, error: mp4Err } = await supabase
-    .from("video_assets")
-    .select("public_url,asset_type,status,created_at")
-    .eq("job_id", pipelineJob.id)
-    .eq("asset_type", "video_mp4")
-    .eq("status", "completed")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  let mp4Url: string | null = null;
+  let mp4SignErr: string | null = null;
 
-  if (mp4Err) assetsDebug.mp4Err = mp4Err.message;
-  pipelineVideoUrl = assetMp4?.public_url ?? null;
+  try {
+    const { data: signed, error: signErr } = await supabase.storage
+      .from(mp4Bucket)
+      .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
 
-  if (!pipelineVideoUrl) {
-    const { data: assetAudio, error: audioErr } = await supabase
+    if (signErr) {
+      mp4SignErr = signErr.message;
+    } else {
+      mp4Url = signed?.signedUrl ?? null;
+    }
+  } catch (e: any) {
+    mp4SignErr = e?.message ?? String(e);
+  }
+
+  // fallback audio (merge sigur, enum acceptă "audio_voice")
+  let audioUrl: string | null = null;
+  let audioErr: string | null = null;
+
+  try {
+    const { data: assetAudio, error: aErr } = await supabase
       .from("video_assets")
       .select("public_url,asset_type,status,created_at")
       .eq("job_id", pipelineJob.id)
@@ -254,9 +261,13 @@ export async function GET(req: Request, context: any) {
       .limit(1)
       .maybeSingle();
 
-    if (audioErr) assetsDebug.audioErr = audioErr.message;
-    pipelineVideoUrl = assetAudio?.public_url ?? null;
+    if (aErr) audioErr = aErr.message;
+    audioUrl = assetAudio?.public_url ?? null;
+  } catch (e: any) {
+    audioErr = e?.message ?? String(e);
   }
+
+  const pipelineVideoUrl = mp4Url ?? audioUrl ?? null;
 
   if (stepsErr) {
     const p = Number(job.progress ?? pipelineJob.progress ?? 0);
@@ -284,7 +295,11 @@ export async function GET(req: Request, context: any) {
         videoUrl: pipelineVideoUrl,
         legacy_job_id: pipelineJob.legacy_job_id,
       },
-      debug: { note: "steps_fetch_failed", message: stepsErr.message, assetsDebug },
+      debug: {
+        note: "steps_fetch_failed",
+        message: stepsErr.message,
+        assetsDebug: { mp4Path, mp4SignErr, audioErr },
+      },
     });
   }
 
@@ -316,7 +331,12 @@ export async function GET(req: Request, context: any) {
     },
     debug: {
       uiMode: "mvp_voiceover_complete_is_done",
-      assetsDebug,
+      assetsDebug: {
+        mp4Path,
+        mp4Signed: !!mp4Url,
+        mp4SignErr,
+        audioErr,
+      },
     },
   });
 }
