@@ -23,7 +23,8 @@ type VideoJob = {
   status: string;
   progress: number;
   error: string | null;
-  video_url: string | null;
+  // ✅ use mp4 url from video-status
+  videoUrl: string | null;
 };
 
 export default function CreateClient() {
@@ -182,10 +183,9 @@ export default function CreateClient() {
       if (!jobId) throw new Error("Missing job.id from /api/video-jobs/create");
 
       setJobMsg("Job created. Triggering worker...");
-      setJob({ id: jobId, status: "queued", progress: 0, error: null, video_url: null });
+      setJob({ id: jobId, status: "queued", progress: 0, error: null, videoUrl: null });
 
       // 2) try trigger worker (server-side, secret not exposed)
-      // if this fails, cron will still run later, but ideally this works now
       try {
         await fetch("/api/video-jobs/run-worker", { method: "POST" });
       } catch {}
@@ -201,15 +201,20 @@ export default function CreateClient() {
     }
   };
 
+  // ✅ Fetch canonical status from /api/presenters/:id/video-status?jobId=...
   const pollJob = async (jobId: string) => {
+    if (!presenter?.id) return;
+
     setJobMsg("Processing...");
 
-    let alive = true;
     const stopAfterMs = 2 * 60 * 1000; // 2 min
     const start = Date.now();
 
-    while (alive) {
-      const res = await fetch(`/api/video-jobs/${jobId}`, { method: "GET" });
+    while (true) {
+      const res = await fetch(
+        `/api/presenters/${encodeURIComponent(presenter.id)}/video-status?jobId=${encodeURIComponent(jobId)}`,
+        { method: "GET", credentials: "include", cache: "no-store" }
+      );
 
       if (res.status === 401) {
         redirectToLogin();
@@ -219,20 +224,20 @@ export default function CreateClient() {
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
-        // show error payload
         const msg = json?.error ? String(json.error) : `Status ${res.status}`;
         setJobMsg(`Error: ${msg}`);
         return;
       }
 
-      const j = json?.job as any;
+      const j: any = json?.job ?? null;
       if (j) {
         setJob({
-          id: j.id,
-          status: j.status,
-          progress: j.progress ?? 0,
+          id: String(j.id ?? jobId),
+          status: String(j.status ?? "queued"),
+          progress: Number(j.progress ?? 0),
           error: j.error ?? null,
-          video_url: j.video_url ?? null,
+          // ✅ prefer videoUrl (mp4), fallback to video_url if older payload exists
+          videoUrl: (j.videoUrl ?? j.video_url ?? null) as string | null,
         });
       }
 
@@ -253,10 +258,6 @@ export default function CreateClient() {
 
       await new Promise((r) => setTimeout(r, 1500));
     }
-
-    return () => {
-      alive = false;
-    };
   };
 
   // UI: Loading
@@ -337,9 +338,9 @@ export default function CreateClient() {
                   <div className="h-2 bg-white" style={{ width: `${pct}%` }} />
                 </div>
 
-                {job.video_url && (
+                {job.videoUrl && (
                   <a
-                    href={job.video_url}
+                    href={job.videoUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-3 inline-block text-sm underline text-white/90 hover:text-white"

@@ -201,7 +201,7 @@ export default function ScriptEditor({
         progress: Number(job.progress ?? 0),
         provider: job.provider ?? null,
         providerJobId: job.providerJobId ?? job.provider_job_id ?? null,
-        videoUrl: job.videoUrl ?? job.video_url ?? null,
+        videoUrl: (job.videoUrl ?? job.video_url ?? null) ? String(job.videoUrl ?? job.video_url) : null,
         error: job.error ?? null,
         createdAt: job.createdAt ?? job.created_at ?? undefined,
         updatedAt: job.updatedAt ?? job.updated_at ?? undefined,
