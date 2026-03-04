@@ -226,8 +226,11 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ preferăm MP4, fallback pe audio
-  const { data: assetMp4 } = await supabase
+  // 4) ✅ preferăm MP4, fallback pe audio (robust: nu crash dacă assets query dă eroare)
+  let pipelineVideoUrl: string | null = null;
+  let assetsDebug: any = {};
+
+  const { data: assetMp4, error: mp4Err } = await supabase
     .from("video_assets")
     .select("public_url,asset_type,status,created_at")
     .eq("job_id", pipelineJob.id)
@@ -237,17 +240,23 @@ export async function GET(req: Request, context: any) {
     .limit(1)
     .maybeSingle();
 
-  const { data: assetAudio } = await supabase
-    .from("video_assets")
-    .select("public_url,asset_type,status,created_at")
-    .eq("job_id", pipelineJob.id)
-    .eq("asset_type", "audio_voice")
-    .eq("status", "completed")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  if (mp4Err) assetsDebug.mp4Err = mp4Err.message;
+  pipelineVideoUrl = assetMp4?.public_url ?? null;
 
-  const pipelineVideoUrl = (assetMp4?.public_url ?? assetAudio?.public_url ?? null) as string | null;
+  if (!pipelineVideoUrl) {
+    const { data: assetAudio, error: audioErr } = await supabase
+      .from("video_assets")
+      .select("public_url,asset_type,status,created_at")
+      .eq("job_id", pipelineJob.id)
+      .eq("asset_type", "audio_voice")
+      .eq("status", "completed")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (audioErr) assetsDebug.audioErr = audioErr.message;
+    pipelineVideoUrl = assetAudio?.public_url ?? null;
+  }
 
   if (stepsErr) {
     const p = Number(job.progress ?? pipelineJob.progress ?? 0);
@@ -275,7 +284,7 @@ export async function GET(req: Request, context: any) {
         videoUrl: pipelineVideoUrl,
         legacy_job_id: pipelineJob.legacy_job_id,
       },
-      debug: { note: "steps_fetch_failed", message: stepsErr.message },
+      debug: { note: "steps_fetch_failed", message: stepsErr.message, assetsDebug },
     });
   }
 
@@ -307,6 +316,7 @@ export async function GET(req: Request, context: any) {
     },
     debug: {
       uiMode: "mvp_voiceover_complete_is_done",
+      assetsDebug,
     },
   });
 }
