@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,13 +53,9 @@ function isProcessing(s: string) {
   return v === "processing" || v === "running";
 }
 
-/**
- * Progres "real" pipeline (media pe pași). (debug/viitor)
- */
+/** Progres “real” pipeline (media pe pași) */
 function computePipelineProgress(steps: StepRow[]) {
-  if (!steps || steps.length === 0) {
-    return { status: "queued", progress: 0 };
-  }
+  if (!steps || steps.length === 0) return { status: "queued", progress: 0 };
 
   if (steps.some((x) => isFailed(x.status))) {
     const p = Math.max(
@@ -82,11 +79,9 @@ function computePipelineProgress(steps: StepRow[]) {
     return { status: "failed", progress: p };
   }
 
-  if (steps.every((x) => isCompleted(x.status))) {
-    return { status: "completed", progress: 100 };
-  }
+  if (steps.every((x) => isCompleted(x.status))) return { status: "completed", progress: 100 };
 
-  const anyProcessing = steps.some((x) => isProcessing(x.status));
+  const anyProc = steps.some((x) => isProcessing(x.status));
   const p = Math.max(
     0,
     Math.min(
@@ -106,7 +101,7 @@ function computePipelineProgress(steps: StepRow[]) {
     )
   );
 
-  return { status: anyProcessing ? "processing" : "queued", progress: p };
+  return { status: anyProc ? "processing" : "queued", progress: p };
 }
 
 /**
@@ -122,7 +117,6 @@ function computeUiStatus(steps: StepRow[], hasMp4: boolean) {
 
   if (st === "failed") return { status: "failed", progress: Math.max(0, Number(vo?.progress ?? 0)) };
 
-  // voiceover ready, but mp4 not ready yet => keep processing
   if (st === "completed") return { status: "processing", progress: 95 };
 
   if (st === "processing" || st === "running") {
@@ -139,7 +133,7 @@ export async function GET(req: Request, context: any) {
 
   const supabase = await supabaseServer();
 
-  // auth
+  // auth (user)
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
@@ -230,29 +224,25 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ Preferăm MP4 din Storage (NU din video_assets)
-  // IMPORTANT: semnarea MP4 trebuie făcută cu SERVICE ROLE (supabaseAdmin),
-  // altfel user-ul poate primi "Object not found" din cauza policies.
+  // 4) ✅ MP4 signed URL via SERVICE ROLE (important for private bucket/policies)
   const mp4Bucket = "renders";
-const mp4Path = `videos/${pipelineJob.id}.mp4`;
+  const mp4Path = `videos/${pipelineJob.id}.mp4`;
 
-let mp4Url: string | null = null;
-let mp4SignErr: string | null = null;
+  let mp4Url: string | null = null;
+  let mp4SignErr: string | null = null;
 
-try {
-  const { data: signed, error: signErr } = await supabase.storage
-    .from(mp4Bucket)
-    .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
+  try {
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from(mp4Bucket)
+      .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
 
-  if (signErr) {
-    mp4SignErr = signErr.message;
-  } else {
-    mp4Url = signed?.signedUrl ?? null;
+    if (signErr) mp4SignErr = signErr.message;
+    else mp4Url = signed?.signedUrl ?? null;
+  } catch (e: any) {
+    mp4SignErr = e?.message ?? String(e);
   }
-} catch (e: any) {
-  mp4SignErr = e?.message ?? String(e);
-}
-  // fallback audio (keep as-is)
+
+  // fallback audio (din DB) — doar dacă MP4 nu e încă disponibil
   let audioUrl: string | null = null;
   let audioErr: string | null = null;
 
@@ -276,6 +266,7 @@ try {
   const hasMp4 = !!mp4Url;
   const pipelineVideoUrl = mp4Url ?? audioUrl ?? null;
 
+  // dacă steps fetch a dat eroare, păstrăm minimul, dar tot preferăm MP4 dacă există
   if (stepsErr) {
     const p = Number(job.progress ?? pipelineJob.progress ?? 0);
     const ui = hasMp4 ? { status: "completed", progress: 100 } : { status: job.status, progress: p };
@@ -290,7 +281,7 @@ try {
         progress: ui.progress,
         provider: job.provider ?? "pipeline",
         providerJobId: pipelineJob.id,
-        videoUrl: job.video_url ?? pipelineVideoUrl ?? null,
+        videoUrl: pipelineVideoUrl ?? job.video_url ?? null,
         error: job.error ?? null,
         createdAt: job.created_at,
         updatedAt: job.updated_at,
