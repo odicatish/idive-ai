@@ -230,28 +230,29 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ preferăm MP4 din Storage (NU din video_assets)
+  // 4) ✅ Preferăm MP4 din Storage (NU din video_assets)
+  // IMPORTANT: semnarea MP4 trebuie făcută cu SERVICE ROLE (supabaseAdmin),
+  // altfel user-ul poate primi "Object not found" din cauza policies.
   const mp4Bucket = "renders";
-  const mp4Path = `videos/${pipelineJob.id}.mp4`;
+const mp4Path = `videos/${pipelineJob.id}.mp4`;
 
-  let mp4Url: string | null = null;
-  let mp4SignErr: string | null = null;
+let mp4Url: string | null = null;
+let mp4SignErr: string | null = null;
 
-  try {
-    const { data: signed, error: signErr } = await supabase.storage
-      .from(mp4Bucket)
-      .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
+try {
+  const { data: signed, error: signErr } = await supabase.storage
+    .from(mp4Bucket)
+    .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
 
-    if (signErr) {
-      mp4SignErr = signErr.message;
-    } else {
-      mp4Url = signed?.signedUrl ?? null;
-    }
-  } catch (e: any) {
-    mp4SignErr = e?.message ?? String(e);
+  if (signErr) {
+    mp4SignErr = signErr.message;
+  } else {
+    mp4Url = signed?.signedUrl ?? null;
   }
-
-  // fallback audio
+} catch (e: any) {
+  mp4SignErr = e?.message ?? String(e);
+}
+  // fallback audio (keep as-is)
   let audioUrl: string | null = null;
   let audioErr: string | null = null;
 
