@@ -303,7 +303,9 @@ export async function GET(req: Request, context: any) {
   }
 
   const ui = computeUiStatus(steps, hasMp4);
-  const computedPipeline = computePipelineProgress(steps);
+  const computedPipeline = hasMp4
+  ? { status: "completed", progress: 100 }
+  : computePipelineProgress(steps);
 
   return NextResponse.json({
     job: {
