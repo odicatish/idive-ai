@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -128,6 +129,65 @@ function computeMvpUiFromVoiceover(steps: StepRow[]) {
   return { status: "queued", progress: 0 };
 }
 
+function requireEnv(name: string) {
+  const v = (process.env[name] || "").trim();
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
+function getSupabaseUrl() {
+  return (
+    (process.env.SUPABASE_URL || "").trim() ||
+    (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim()
+  );
+}
+
+function makeSupabaseAdmin() {
+  const url = getSupabaseUrl();
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  if (!url) throw new Error("Missing env: SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)");
+  if (!serviceKey) throw new Error("Missing env: SUPABASE_SERVICE_ROLE_KEY");
+
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function signMp4IfExists(pipelineJobId: string) {
+  // MP4 este generat de worker în: renders/videos/{pipelineJobId}.mp4
+  const admin = makeSupabaseAdmin();
+  const bucket = "renders";
+  const folder = "videos";
+  const filename = `${pipelineJobId}.mp4`;
+  const fullPath = `${folder}/${filename}`;
+
+  // verificăm dacă există obiectul
+  const { data: listed, error: listErr } = await admin.storage.from(bucket).list(folder, {
+    limit: 1,
+    search: filename,
+  });
+
+  if (listErr) {
+    return { url: null as string | null, debug: { mp4Path: fullPath, mp4ListErr: listErr.message } };
+  }
+
+  const exists = Array.isArray(listed) && listed.some((x: any) => x?.name === filename);
+  if (!exists) {
+    return { url: null as string | null, debug: { mp4Path: fullPath, mp4Missing: true } };
+  }
+
+  const { data: signed, error: signErr } = await admin.storage
+    .from(bucket)
+    .createSignedUrl(fullPath, 60 * 60 * 24 * 7);
+
+  if (signErr) {
+    return { url: null as string | null, debug: { mp4Path: fullPath, mp4SignErr: signErr.message } };
+  }
+
+  return { url: signed?.signedUrl ?? null, debug: { mp4Path: fullPath, mp4Signed: true } };
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
@@ -225,35 +285,28 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ preferăm MP4 din Storage (NU din video_assets, fiindcă asset_type e ENUM și "video_mp4" nu e acceptat)
-  const mp4Bucket = "renders";
-  const mp4Path = `videos/${pipelineJob.id}.mp4`;
-
+  // 4) ✅ Preferăm MP4 din Storage (semnat cu Service Role), fallback pe audio_voice din video_assets
   let mp4Url: string | null = null;
-  let mp4SignErr: string | null = null;
+  let mp4Debug: any = null;
 
   try {
-    const { data: signed, error: signErr } = await supabase.storage
-      .from(mp4Bucket)
-      .createSignedUrl(mp4Path, 60 * 60 * 24 * 7);
-
-    if (signErr) {
-      mp4SignErr = signErr.message;
-    } else {
-      mp4Url = signed?.signedUrl ?? null;
-    }
+    // dacă lipsesc env-urile, nu crăpăm endpoint-ul, doar facem fallback
+    requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const out = await signMp4IfExists(pipelineJob.id);
+    mp4Url = out.url;
+    mp4Debug = out.debug;
   } catch (e: any) {
-    mp4SignErr = e?.message ?? String(e);
+    mp4Debug = { mp4EnvErr: e?.message ?? String(e) };
   }
 
-  // fallback audio (merge sigur, enum acceptă "audio_voice")
+  // fallback audio_voice (enum acceptat)
   let audioUrl: string | null = null;
   let audioErr: string | null = null;
 
   try {
     const { data: assetAudio, error: aErr } = await supabase
       .from("video_assets")
-      .select("public_url,asset_type,status,created_at")
+      .select("public_url,created_at")
       .eq("job_id", pipelineJob.id)
       .eq("asset_type", "audio_voice")
       .eq("status", "completed")
@@ -298,7 +351,7 @@ export async function GET(req: Request, context: any) {
       debug: {
         note: "steps_fetch_failed",
         message: stepsErr.message,
-        assetsDebug: { mp4Path, mp4SignErr, audioErr },
+        assetsDebug: { mp4Debug, audioErr },
       },
     });
   }
@@ -331,12 +384,7 @@ export async function GET(req: Request, context: any) {
     },
     debug: {
       uiMode: "mvp_voiceover_complete_is_done",
-      assetsDebug: {
-        mp4Path,
-        mp4Signed: !!mp4Url,
-        mp4SignErr,
-        audioErr,
-      },
+      assetsDebug: { mp4Debug, audioErr },
     },
   });
 }
