@@ -37,6 +37,68 @@ function getProjectRefFromUrl(url: string) {
   }
 }
 
+function normalizeForTTS(raw: string, lang?: string) {
+  let t = (raw || "").trim();
+
+  // normalize newlines / spaces
+  t = t.replace(/\r\n/g, "\n");
+  t = t.replace(/[ \t]+/g, " ");
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  // add gentle pauses (line breaks help most TTS engines)
+  // - split after sentence endings when a new sentence begins
+  t = t.replace(/([.!?])(\s+)([A-ZĂÂÎȘȚ])/g, "$1\n$3");
+
+  // - after ":" add a new line (useful for enumerations)
+  t = t.replace(/:\s*/g, ":\n");
+
+  // small RO improvements
+  const isRo = String(lang || "").toLowerCase().startsWith("ro");
+  if (isRo) {
+    t = t.replace(/\s&\s/g, " și ");
+    t = t.replace(/%/g, " la sută");
+    t = t.replace(/\+/g, " plus ");
+    // 10-20 -> 10 până la 20 (more natural)
+    t = t.replace(/\b(\d+)\s*-\s*(\d+)\b/g, "$1 până la $2");
+  } else {
+    // EN-ish defaults
+    t = t.replace(/\s&\s/g, " and ");
+    t = t.replace(/%/g, " percent");
+  }
+
+  return t;
+}
+
+function buildVoiceDirection(lang?: string) {
+  const isRo = String(lang || "").toLowerCase().startsWith("ro");
+  // Very short, so we don't "waste" too many tokens and we keep cost down.
+  // This often helps reduce the "robotic" cadence.
+  if (isRo) {
+    return [
+      "Stil de voce: natural, cald, conversațional.",
+      "Ritmul: moderat, cu pauze scurte între propoziții.",
+      "Pronunță clar, fără ton robotic.",
+      "",
+    ].join("\n");
+  }
+
+  return [
+    "Voice style: natural, warm, conversational.",
+    "Pace: medium, with short pauses between sentences.",
+    "Speak clearly, avoid robotic cadence.",
+    "",
+  ].join("\n");
+}
+
+function pickVoiceFromEnvOrDefault() {
+  // OpenAI TTS voices (common): alloy, echo, fable, onyx, nova, shimmer
+  const v = (process.env.OPENAI_TTS_VOICE || "").trim().toLowerCase();
+  if (v) return v;
+
+  // default: nova tends to feel more human than alloy for many scripts
+  return "nova";
+}
+
 /**
  * Generates a voiceover MP3 for a pipeline render job and uploads it to Storage.
  * Returns a signed URL (string) or null (if cannot be generated).
@@ -73,8 +135,13 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const script = scriptRaw as AnyRow | null;
   if (!script) throw new Error("Script not found");
 
+  const lang = String(script.language || "").trim() || undefined;
+
   const text = String(script.content || "").trim();
   if (!text) throw new Error("Script is empty (nothing to synthesize).");
+
+  // ✅ Prepare more natural input
+  const ttsText = buildVoiceDirection(lang) + normalizeForTTS(text, lang);
 
   // 3) mark step processing (best-effort; if row missing, fail loudly so we fix seed)
   const now = new Date().toISOString();
@@ -95,10 +162,12 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   // 4) generate TTS
   const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+  const voice = pickVoiceFromEnvOrDefault();
+
   const speech = await openai.audio.speech.create({
     model: "gpt-4o-mini-tts",
-    voice: "alloy",
-    input: text,
+    voice,
+    input: ttsText,
   });
 
   const buffer = Buffer.from(await speech.arrayBuffer());
@@ -125,7 +194,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   const signedUrl = signed?.signedUrl ?? null;
 
-  // 7) create asset (best-effort, but if fails we want to know)
+  // 7) create asset
   const { error: assetErr } = await supabase.from("video_assets").insert(
     {
       job_id: jobId,
@@ -135,7 +204,15 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
       storage_bucket: bucket,
       storage_path: path,
       public_url: signedUrl,
-      meta: { projectRef, usedUrl },
+      meta: {
+        projectRef,
+        usedUrl,
+        tts: {
+          model: "gpt-4o-mini-tts",
+          voice,
+          language: lang ?? null,
+        },
+      },
     } as any
   );
 
