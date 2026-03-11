@@ -70,9 +70,7 @@ async function getUserIdFromSession(): Promise<string | null> {
               cookiesToSet.forEach(({ name, value, options }) => {
                 cookieStore.set(name, value, options);
               });
-            } catch {
-              // ignore
-            }
+            } catch {}
           },
         },
       }
@@ -98,6 +96,8 @@ export async function POST(req: Request) {
     const userId = await getUserIdFromSession();
     if (!userId) return Response.json({ error: "unauthorized" }, { status: 401 });
 
+    const useCase = body.useCase || "business_spokesperson";
+
     const userPrompt =
       typeof body.prompt === "string" && body.prompt.trim().length > 0 ? body.prompt.trim() : null;
 
@@ -112,87 +112,6 @@ export async function POST(req: Request) {
       notes: normalizeStr(ctxIn.notes, 400),
     };
 
-    const contextBlock = `
-SCENE / CONTEXT (VERY IMPORTANT):
-- Location: ${context.location || "not specified"}
-- Domain/Industry: ${context.domain || "not specified"}
-- Audience: ${context.audience || "not specified"}
-- Tone: ${context.tone}
-- Visual vibe: ${context.visual}
-- Notes: ${context.notes || "none"}
-
-DIRECTION:
-Write like a premium Apple-style narrator: minimal, confident, precise.
-Add subtle cinematic micro-moments (1–2 vivid lines max), never cheesy.
-Keep the language natural and spoken, not robotic.
-`.trim();
-
-    // WARDROBE MODE
-    if (body.presenter && body.wardrobe) {
-      const locked = body.presenter as any;
-
-      const imagePrompt = `
-Ultra realistic cinematic portrait.
-
-PERSON (KEEP SAME FACE):
-${locked.appearance ?? ""}
-
-WARDROBE:
-${String(body.wardrobe ?? "")}
-
-IMPORTANT:
-- KEEP same identity
-- same facial structure
-- same age
-- same ethnicity
-- change ONLY clothing
-
-Shot on 85mm lens
-studio lighting
-extreme skin detail
-natural imperfections
-`.trim();
-
-      const img = await openai.images.generate({
-        model: "gpt-image-1",
-        prompt: imagePrompt,
-        size: "1024x1536",
-      });
-
-      const b64 = img.data?.[0]?.b64_json;
-      if (!b64) {
-        return Response.json(
-          { error: "Image generation failed (no base64 returned)" },
-          { status: 500 }
-        );
-      }
-
-      const bytes = Buffer.from(b64, "base64");
-      const filePath = `${locked.id || "no-id"}/${randomId()}.png`;
-
-      const up = await supabaseAdmin.storage.from(BUCKET).upload(filePath, bytes, {
-        contentType: "image/png",
-        upsert: false,
-      });
-
-      if (up.error) {
-        return Response.json({ error: "Storage upload failed", details: up.error.message }, { status: 500 });
-      }
-
-      if (locked.id) {
-        await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", locked.id);
-      }
-
-      const signedUrl = await getSignedUrl(filePath);
-
-      return Response.json({
-        ...locked,
-        image_path: filePath,
-        image: signedUrl,
-      });
-    }
-
-    // NEW HUMAN MODE
     const genderIn = body.gender || "any";
     const age = body.age || "30-45";
     const industry = body.industry || "business";
@@ -202,63 +121,102 @@ natural imperfections
     const genderRule =
       genderIn === "any"
         ? `Choose ONE gender: "male" or "female" and set it in the JSON field "gender".`
-        : `Gender MUST be "${genderIn}". Set JSON field "gender" accordingly.`;
+        : `Gender MUST be "${genderIn}".`;
 
-    const creativeDirection = userPrompt
-      ? `
-USER CREATIVE BRIEF (EXTREMELY IMPORTANT):
-${userPrompt}
+    // 🔹 use case script behavior
+    let useCaseInstruction = "";
 
-Follow the user's brief carefully when writing the SCRIPT.
-Do NOT ignore it.
-`
-      : `
-No specific creative brief provided.
-Create a strong marketing-style script suitable for the selected domain.
+    if (useCase === "sales_outreach") {
+      useCaseInstruction = `
+USE CASE: SALES OUTREACH VIDEO
+
+Goal: convince a potential customer to explore the product.
+
+Structure:
+1. personalized style hook
+2. short problem statement
+3. short solution explanation
+4. invitation to book demo
+
+Duration: 15-20 seconds.
+CTA: book a demo or learn more.
 `;
+    }
 
-    const systemStyleHint =
-      context.visual === "ultra-minimal"
-        ? "Ultra minimal delivery. Fewer adjectives. Crisp sentences."
-        : context.visual === "dark-studio"
-        ? "Dark studio vibe. Controlled intensity. Still premium and clean."
-        : "Apple-clean with subtle cinematic micro-moments. Premium SaaS feel.";
+    if (useCase === "product_explainer") {
+      useCaseInstruction = `
+USE CASE: PRODUCT EXPLAINER
+
+Goal: clearly explain a product or feature.
+
+Structure:
+1. hook
+2. what problem it solves
+3. how it works
+4. benefit
+
+Duration: 25-40 seconds.
+CTA: try it today.
+`;
+    }
+
+    if (useCase === "founder_ceo") {
+      useCaseInstruction = `
+USE CASE: FOUNDER MESSAGE
+
+Goal: communicate leadership vision.
+
+Structure:
+1. founder perspective
+2. mission
+3. short insight
+4. invitation to join
+
+Duration: 25-30 seconds.
+Tone: authentic and visionary.
+`;
+    }
+
+    if (useCase === "business_spokesperson") {
+      useCaseInstruction = `
+USE CASE: BUSINESS SPOKESPERSON
+
+Goal: represent the company professionally.
+
+Structure:
+1. strong hook
+2. what the company does
+3. key benefit
+4. CTA
+
+Duration: 20-30 seconds.
+`;
+    }
 
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
-Create a hyper-realistic AI presenter in VALID JSON following the schema.
+Create a hyper-realistic AI presenter in JSON.
 
-Constraints:
-- ${genderRule}
-- Age range: ${age}
-- Domain/Industry: ${context.domain || industry}
-- Energy: ${energy}
-- Style: ${style}
+${genderRule}
 
-${contextBlock}
+Industry: ${context.domain || industry}
+Energy: ${energy}
+Style: ${style}
 
-STYLE HINT:
-${systemStyleHint}
-
-CRITICAL CONSISTENCY RULE:
-- The presenter NAME must match the gender (male name for male, female name for female).
-- Use a realistic first + last name.
-
-${creativeDirection}
+${useCaseInstruction}
 
 SCRIPT RULES:
-- language: Romanian (ro) unless user brief clearly requests otherwise
+- language: Romanian unless prompt specifies otherwise
 - natural spoken language
 - not robotic
-- strong hook in first sentence
-- clean structure (2–4 short beats)
-- persuasive, premium
-- Target duration: 20–30 seconds spoken
-- include a call-to-action when appropriate
-- avoid hype words like "revoluționar", "garantat", "cel mai bun din lume"
+- strong first sentence
+- persuasive but not exaggerated
+- no marketing hype words
 
-Return ONLY the JSON object.
+${userPrompt ? `USER PROMPT:\n${userPrompt}` : ""}
+
+Return ONLY JSON.
 `.trim(),
       text: {
         format: {
@@ -272,17 +230,15 @@ Return ONLY the JSON object.
 
     const jsonText = response.output_text?.trim();
     if (!jsonText) {
-      return Response.json({ error: "Text generation failed (empty output_text)" }, { status: 500 });
+      return Response.json({ error: "Text generation failed" }, { status: 500 });
     }
 
     let presenter: PresenterJson;
+
     try {
       presenter = JSON.parse(jsonText);
     } catch (e: any) {
-      return Response.json(
-        { error: "Failed to parse model JSON", details: e?.message, raw: jsonText },
-        { status: 500 }
-      );
+      return Response.json({ error: "JSON parse failed", raw: jsonText }, { status: 500 });
     }
 
     const imagePrompt = `
@@ -291,19 +247,7 @@ Ultra realistic cinematic portrait.
 GENDER: ${presenter.gender}
 AGE RANGE: ${age}
 
-APPEARANCE / IDENTITY:
 ${presenter.appearance}
-
-CONTEXT:
-Location: ${context.location || "not specified"}
-Domain: ${context.domain || industry}
-Tone: ${context.tone}
-Visual vibe: ${context.visual}
-
-IMPORTANT:
-- completely unique human
-- not resembling anyone real
-- no celebrity likeness
 
 Shot on 85mm lens
 studio lighting
@@ -317,92 +261,61 @@ extreme detail
     });
 
     const b64 = img.data?.[0]?.b64_json;
-    if (!b64) {
-      return Response.json({ error: "Image generation failed (no base64 returned)" }, { status: 500 });
-    }
+    if (!b64) return Response.json({ error: "Image generation failed" }, { status: 500 });
 
     const ins = await supabaseAdmin
-  .from("presenters")
-  .insert({
-    user_id: userId,
-    name: presenter.name,
-    title: presenter.title,
-    bio: presenter.bio,
-    script: presenter.script,
-    appearance: presenter.appearance,
-    prompt: userPrompt,
-    context,
-
-    // ✅ Presenter DNA
-    gender: presenter.gender,
-    age,
-    industry: context.domain || industry,
-    energy,
-    style,
-  })
-  .select("id")
-  .single();
+      .from("presenters")
+      .insert({
+        user_id: userId,
+        name: presenter.name,
+        title: presenter.title,
+        bio: presenter.bio,
+        script: presenter.script,
+        appearance: presenter.appearance,
+        prompt: userPrompt,
+        context,
+        gender: presenter.gender,
+        age,
+        industry: context.domain || industry,
+        energy,
+        style,
+      })
+      .select("id")
+      .single();
 
     if (ins.error) {
-      return Response.json({ error: "DB insert failed", details: ins.error.message }, { status: 500 });
+      return Response.json({ error: ins.error.message }, { status: 500 });
     }
 
-    const presenterId = ins.data.id as string;
+    const presenterId = ins.data.id;
 
     const bytes = Buffer.from(b64, "base64");
     const filePath = `${presenterId}/${randomId()}.png`;
 
-    const up = await supabaseAdmin.storage.from(BUCKET).upload(filePath, bytes, {
+    await supabaseAdmin.storage.from(BUCKET).upload(filePath, bytes, {
       contentType: "image/png",
-      upsert: false,
     });
-
-    if (up.error) {
-      return Response.json({ error: "Storage upload failed", details: up.error.message }, { status: 500 });
-    }
 
     await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", presenterId);
 
-   const scriptIns = await supabaseAdmin
-  .from("presenter_scripts")
-  .insert({
-    presenter_id: presenterId,
-    content: presenter.script ?? "",
-    language: "ro",
-    version: 1,
-    created_by: userId,
-    updated_by: userId,
-
-    // ✅ persistent tone/profile for future generations
-    tone: {
-      industry: context.domain || industry,
-      energy,
-      style,
-      audience: context.audience || null,
-      tone: context.tone || null,
-      visual: context.visual || null,
-      location: context.location || null,
-    },
-  })
-  .select("id,version,content")
-  .single();
-
-    if (!scriptIns.error && scriptIns.data?.id) {
-      // ✅ history (no duplicate crashes)
-      await supabaseAdmin
-        .from("presenter_script_versions")
-        .upsert(
-          {
-            script_id: scriptIns.data.id,
-            content: scriptIns.data.content,
-            version: scriptIns.data.version,
-            source: "snapshot",
-            meta: { reason: "generate-script" },
-            created_by: userId,
-          },
-          { onConflict: "script_id,version", ignoreDuplicates: true }
-        );
-    }
+    const scriptIns = await supabaseAdmin
+      .from("presenter_scripts")
+      .insert({
+        presenter_id: presenterId,
+        content: presenter.script ?? "",
+        language: "ro",
+        version: 1,
+        created_by: userId,
+        updated_by: userId,
+        tone: {
+          industry: context.domain || industry,
+          energy,
+          style,
+          useCase,
+        },
+      })
+      .select("id")
+      .single();
 
     const signedUrl = await getSignedUrl(filePath);
 
