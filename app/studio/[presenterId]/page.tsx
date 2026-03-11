@@ -31,6 +31,7 @@ export default async function StudioPage({ params }: { params: Params }) {
     console.error("PRESENTER_LOAD_ERROR", pErr);
     notFound();
   }
+
   if (!presenter || presenter.user_id !== auth.user.id) notFound();
 
   const { data: existingScript, error: sErr } = await supabase
