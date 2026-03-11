@@ -37,66 +37,130 @@ function getProjectRefFromUrl(url: string) {
   }
 }
 
-function normalizeForTTS(raw: string, lang?: string) {
-  let t = (raw || "").trim();
-
-  // normalize newlines / spaces
-  t = t.replace(/\r\n/g, "\n");
-  t = t.replace(/[ \t]+/g, " ");
-  t = t.replace(/\n{3,}/g, "\n\n");
-
-  // add gentle pauses (line breaks help most TTS engines)
-  // - split after sentence endings when a new sentence begins
-  t = t.replace(/([.!?])(\s+)([A-ZĂÂÎȘȚ])/g, "$1\n$3");
-
-  // - after ":" add a new line (useful for enumerations)
-  t = t.replace(/:\s*/g, ":\n");
-
-  // small RO improvements
-  const isRo = String(lang || "").toLowerCase().startsWith("ro");
-  if (isRo) {
-    t = t.replace(/\s&\s/g, " și ");
-    t = t.replace(/%/g, " la sută");
-    t = t.replace(/\+/g, " plus ");
-    // 10-20 -> 10 până la 20 (more natural)
-    t = t.replace(/\b(\d+)\s*-\s*(\d+)\b/g, "$1 până la $2");
-  } else {
-    // EN-ish defaults
-    t = t.replace(/\s&\s/g, " and ");
-    t = t.replace(/%/g, " percent");
+/**
+ * Heuristic language detect (lightweight).
+ * - Prefer script.language if present.
+ */
+function detectLang(scriptLanguage: any, text: string): string {
+  const raw = String(scriptLanguage || "").trim().toLowerCase();
+  if (raw) {
+    // normalize common forms
+    if (raw.startsWith("ro")) return "ro";
+    if (raw.startsWith("en")) return "en";
+    if (raw.startsWith("fr")) return "fr";
+    if (raw.startsWith("es")) return "es";
+    if (raw.startsWith("de")) return "de";
+    if (raw.startsWith("it")) return "it";
+    if (raw.startsWith("pt")) return "pt";
+    if (raw.startsWith("nl")) return "nl";
+    // otherwise keep short
+    return raw.slice(0, 8);
   }
+
+  // Romanian diacritics heuristic
+  if (/[ăâîșţț]/i.test(text)) return "ro";
+
+  // fallback
+  return "en";
+}
+
+/**
+ * Remove "meta" lines that your UI might prepend/append:
+ * - tone / industry / audience / location / style etc.
+ * - headings like "Scene / Context"
+ * - bracket-like labels
+ *
+ * Goal: TTS should speak ONLY the actual script.
+ */
+function stripMetaAndNormalizeForTts(input: string): string {
+  let t = String(input || "");
+
+  // normalize newlines
+  t = t.replace(/\r\n/g, "\n");
+
+  // Remove obvious UI section headings (EN/RO) and label lines
+  // We remove lines like: "TONE: premium", "Industry / Domain: business", etc.
+  const labelLine = /^(?:\s*)(?:scene\s*\/\s*context|context|location|industry\s*\/\s*domain|industry|domain|audience|tone|energy|communication\s*style|style|gender|age\s*range|limbă|limba|ton|energie|stil|audien[țt]ă|domeniu|industrie|loca[țt]ie)\s*[:\-].*$/i;
+
+  const lines = t.split("\n");
+  const kept: string[] = [];
+
+  for (const line of lines) {
+    const l = line.trim();
+    if (!l) {
+      kept.push("");
+      continue;
+    }
+
+    // drop label lines
+    if (labelLine.test(l)) continue;
+
+    // drop lines that are just tags like: "premium, friendly, authoritative"
+    if (/^(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant)(?:\s*,\s*(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant))*$/i.test(l)) {
+      continue;
+    }
+
+    // drop UI hints / placeholders
+    if (/^write your script/i.test(l)) continue;
+    if (/^script\s*\(preview\)/i.test(l)) continue;
+
+    kept.push(line);
+  }
+
+  t = kept.join("\n");
+
+  // Remove markdown noise that can make it sound robotic
+  t = t
+    .replace(/```[\s\S]*?```/g, "")      // code blocks
+    .replace(/`([^`]+)`/g, "$1")         // inline code
+    .replace(/^#{1,6}\s+/gm, "")         // headings
+    .replace(/^\s*[-*•]\s+/gm, "")       // bullets
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1"); // markdown links
+
+  // Collapse excessive whitespace but keep paragraph pauses
+  t = t
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // If it starts with a meta paragraph (common), try to cut until first “real” sentence.
+  // (very conservative: only if we see ":", and looks like config)
+  if (t.length > 0) {
+    const firstPara = t.split("\n\n")[0] || "";
+    if (firstPara.includes(":") && firstPara.length < 220) {
+      // if first paragraph is mostly key:value-ish, drop it
+      const kvish = firstPara.split("\n").every((ln) => ln.includes(":"));
+      if (kvish) {
+        t = t.split("\n\n").slice(1).join("\n\n").trim();
+      }
+    }
+  }
+
+  // Ensure ending punctuation helps cadence
+  if (t && !/[.!?…]\s*$/.test(t)) t += ".";
 
   return t;
 }
 
-function buildVoiceDirection(lang?: string) {
-  const isRo = String(lang || "").toLowerCase().startsWith("ro");
-  // Very short, so we don't "waste" too many tokens and we keep cost down.
-  // This often helps reduce the "robotic" cadence.
-  if (isRo) {
-    return [
-      "Stil de voce: natural, cald, conversațional.",
-      "Ritmul: moderat, cu pauze scurte între propoziții.",
-      "Pronunță clar, fără ton robotic.",
-      "",
-    ].join("\n");
-  }
+/**
+ * Voice selection
+ * You can override via env:
+ * - VOICEOVER_VOICE=marin (or cedar, shimmer, verse, etc.)
+ *
+ * Voices list includes: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar. :contentReference[oaicite:1]{index=1}
+ */
+function pickVoice(lang: string): string {
+  const override = (process.env.VOICEOVER_VOICE || "").trim();
+  if (override) return override;
 
-  return [
-    "Voice style: natural, warm, conversational.",
-    "Pace: medium, with short pauses between sentences.",
-    "Speak clearly, avoid robotic cadence.",
-    "",
-  ].join("\n");
-}
+  // Simple defaults:
+  // - For RO, "cedar" often sounds fuller/less “nasal” than alloy
+  // - For EN, "marin" tends to sound more natural
+  if (lang === "ro") return "cedar";
+  if (lang === "en") return "marin";
 
-function pickVoiceFromEnvOrDefault() {
-  // OpenAI TTS voices (common): alloy, echo, fable, onyx, nova, shimmer
-  const v = (process.env.OPENAI_TTS_VOICE || "").trim().toLowerCase();
-  if (v) return v;
-
-  // default: nova tends to feel more human than alloy for many scripts
-  return "nova";
+  // fallback
+  return "marin";
 }
 
 /**
@@ -135,15 +199,17 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const script = scriptRaw as AnyRow | null;
   if (!script) throw new Error("Script not found");
 
-  const lang = String(script.language || "").trim() || undefined;
+  const rawText = String(script.content || "").trim();
+  if (!rawText) throw new Error("Script is empty (nothing to synthesize).");
 
-  const text = String(script.content || "").trim();
-  if (!text) throw new Error("Script is empty (nothing to synthesize).");
+  const lang = detectLang(script.language, rawText);
+  const voice = pickVoice(lang);
 
-  // ✅ Prepare more natural input
-  const ttsText = buildVoiceDirection(lang) + normalizeForTTS(text, lang);
+  // ✅ clean text so it does NOT read tone/context labels
+  const text = stripMetaAndNormalizeForTts(rawText);
+  if (!text) throw new Error("After cleanup, script became empty (check meta stripping rules).");
 
-  // 3) mark step processing (best-effort; if row missing, fail loudly so we fix seed)
+  // 3) mark step processing
   const now = new Date().toISOString();
   const { error: stepStartErr } = await supabase
     .from("video_render_steps")
@@ -162,12 +228,10 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   // 4) generate TTS
   const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-  const voice = pickVoiceFromEnvOrDefault();
-
   const speech = await openai.audio.speech.create({
     model: "gpt-4o-mini-tts",
     voice,
-    input: ttsText,
+    input: text,
   });
 
   const buffer = Buffer.from(await speech.arrayBuffer());
@@ -207,11 +271,9 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
       meta: {
         projectRef,
         usedUrl,
-        tts: {
-          model: "gpt-4o-mini-tts",
-          voice,
-          language: lang ?? null,
-        },
+        lang,
+        voice,
+        cleaned: true,
       },
     } as any
   );

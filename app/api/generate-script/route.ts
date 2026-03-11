@@ -322,19 +322,26 @@ extreme detail
     }
 
     const ins = await supabaseAdmin
-      .from("presenters")
-      .insert({
-        user_id: userId,
-        name: presenter.name,
-        title: presenter.title,
-        bio: presenter.bio,
-        script: presenter.script,
-        appearance: presenter.appearance,
-        prompt: userPrompt,
-        context,
-      })
-      .select("id")
-      .single();
+  .from("presenters")
+  .insert({
+    user_id: userId,
+    name: presenter.name,
+    title: presenter.title,
+    bio: presenter.bio,
+    script: presenter.script,
+    appearance: presenter.appearance,
+    prompt: userPrompt,
+    context,
+
+    // ✅ Presenter DNA
+    gender: presenter.gender,
+    age,
+    industry: context.domain || industry,
+    energy,
+    style,
+  })
+  .select("id")
+  .single();
 
     if (ins.error) {
       return Response.json({ error: "DB insert failed", details: ins.error.message }, { status: 500 });
@@ -356,18 +363,29 @@ extreme detail
 
     await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", presenterId);
 
-    const scriptIns = await supabaseAdmin
-      .from("presenter_scripts")
-      .insert({
-        presenter_id: presenterId,
-        content: presenter.script ?? "",
-        language: "ro",
-        version: 1,
-        created_by: userId,
-        updated_by: userId,
-      })
-      .select("id,version,content")
-      .single();
+   const scriptIns = await supabaseAdmin
+  .from("presenter_scripts")
+  .insert({
+    presenter_id: presenterId,
+    content: presenter.script ?? "",
+    language: "ro",
+    version: 1,
+    created_by: userId,
+    updated_by: userId,
+
+    // ✅ persistent tone/profile for future generations
+    tone: {
+      industry: context.domain || industry,
+      energy,
+      style,
+      audience: context.audience || null,
+      tone: context.tone || null,
+      visual: context.visual || null,
+      location: context.location || null,
+    },
+  })
+  .select("id,version,content")
+  .single();
 
     if (!scriptIns.error && scriptIns.data?.id) {
       // ✅ history (no duplicate crashes)
