@@ -49,6 +49,13 @@ function normalizeGender(v: any): "male" | "female" | "unknown" {
   return "unknown";
 }
 
+function normalizeVoicePreset(v: any) {
+  const s = String(v || "").trim().toLowerCase();
+  if (!s) return "auto";
+  if (["auto", "shimmer", "alloy", "marin", "cedar", "verse"].includes(s)) return s;
+  return "auto";
+}
+
 /**
  * Heuristic language detect (lightweight).
  */
@@ -128,6 +135,21 @@ function getDeliveryFromData(
     default:
       return "calm";
   }
+}
+
+function getVoiceProfileFromContext(presenterContext: AnyRow | null) {
+  const raw =
+    presenterContext?.voiceProfile && typeof presenterContext.voiceProfile === "object"
+      ? presenterContext.voiceProfile
+      : {};
+
+  return {
+    genderPreference:
+      normalizeGender(raw?.genderPreference) === "unknown"
+        ? String(raw?.genderPreference || "auto").trim().toLowerCase() || "auto"
+        : normalizeGender(raw?.genderPreference),
+    preset: normalizeVoicePreset(raw?.preset),
+  };
 }
 
 function stripMetaAndNormalizeForTts(input: string): string {
@@ -268,16 +290,19 @@ function pickVoiceByGenderAndStyle(opts: {
   gender: "male" | "female" | "unknown";
   delivery: string;
   voiceStyle: string;
+  preset?: string;
 }) {
-  const override = (process.env.VOICEOVER_VOICE || "").trim();
-  if (override) return override;
+  const envOverride = (process.env.VOICEOVER_VOICE || "").trim();
+  if (envOverride) return envOverride;
+
+  const preset = normalizeVoicePreset(opts.preset);
+  if (preset !== "auto") return preset;
 
   const lang = opts.lang.toLowerCase();
   const gender = opts.gender;
   const d = opts.delivery.toLowerCase();
   const v = opts.voiceStyle.toLowerCase();
 
-  // FEMALE: prioritize clearly feminine voices first
   if (gender === "female") {
     if (lang === "ro") {
       if (d === "executive" || v === "authoritative") return "shimmer";
@@ -296,7 +321,6 @@ function pickVoiceByGenderAndStyle(opts: {
     return "shimmer";
   }
 
-  // MALE
   if (gender === "male") {
     if (lang === "ro") {
       if (d === "energetic" || v === "energetic") return "verse";
@@ -317,7 +341,6 @@ function pickVoiceByGenderAndStyle(opts: {
     return "cedar";
   }
 
-  // UNKNOWN fallback
   if (lang === "ro") {
     if (d === "energetic" || v === "energetic") return "verse";
     if (d === "clear" || v === "clear") return "marin";
@@ -392,7 +415,12 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
       ? (presenter.context as AnyRow)
       : {};
 
-  const presenterGender = normalizeGender(presenter?.gender);
+  const voiceProfile = getVoiceProfileFromContext(presenterContext);
+
+  let presenterGender = normalizeGender(presenter?.gender);
+  if (voiceProfile.genderPreference === "female") presenterGender = "female";
+  if (voiceProfile.genderPreference === "male") presenterGender = "male";
+
   const useCase = getUseCaseFromData(presenter, tone);
   const voiceStyle = getVoiceStyleFromData(presenterContext, tone, useCase);
   const delivery = getDeliveryFromData(presenterContext, tone, voiceStyle);
@@ -402,6 +430,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
     gender: presenterGender,
     delivery,
     voiceStyle,
+    preset: voiceProfile.preset,
   });
 
   const cleanedText = stripMetaAndNormalizeForTts(rawText);
@@ -485,6 +514,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
         useCase,
         cleaned: true,
         presenterName: normalizeText(presenter?.name, 120) || null,
+        voiceProfile,
       },
     } as any
   );

@@ -65,6 +65,11 @@ type VideoDirection = {
   background: string;
 };
 
+type VoiceProfile = {
+  genderPreference: string;
+  preset: string;
+};
+
 type ContextState = {
   location: string;
   domain: string;
@@ -73,6 +78,7 @@ type ContextState = {
   visual: string;
   notes: string;
   videoDirection: VideoDirection;
+  voiceProfile: VoiceProfile;
 };
 
 function useDebouncedCallback(fn: () => void, ms: number) {
@@ -162,6 +168,38 @@ function normalizeVideoDirection(
         ? raw.background.trim()
         : fallback.background,
   };
+}
+
+function normalizeVoiceProfile(raw: any): VoiceProfile {
+  return {
+    genderPreference:
+      typeof raw?.genderPreference === "string" && raw.genderPreference.trim()
+        ? raw.genderPreference.trim()
+        : "auto",
+    preset:
+      typeof raw?.preset === "string" && raw.preset.trim()
+        ? raw.preset.trim()
+        : "auto",
+  };
+}
+
+function getVoicePresetLabel(v: string) {
+  switch (v) {
+    case "auto":
+      return "Auto";
+    case "shimmer":
+      return "Shimmer";
+    case "alloy":
+      return "Alloy";
+    case "marin":
+      return "Marin";
+    case "cedar":
+      return "Cedar";
+    case "verse":
+      return "Verse";
+    default:
+      return v;
+  }
 }
 
 export default function ScriptEditor({
@@ -550,11 +588,13 @@ export default function ScriptEditor({
       presenter.context?.videoDirection,
       presenterUseCaseRaw
     ),
+    voiceProfile: normalizeVoiceProfile(presenter.context?.voiceProfile),
   }));
 
   const ctxDirty = useMemo(() => {
     const prev = presenter.context ?? {};
     const prevVideoDirection = normalizeVideoDirection(prev.videoDirection, presenterUseCaseRaw);
+    const prevVoiceProfile = normalizeVoiceProfile(prev.voiceProfile);
 
     return (
       (prev.location ?? "") !== ctx.location ||
@@ -566,7 +606,9 @@ export default function ScriptEditor({
       prevVideoDirection.shot !== ctx.videoDirection.shot ||
       prevVideoDirection.delivery !== ctx.videoDirection.delivery ||
       prevVideoDirection.movement !== ctx.videoDirection.movement ||
-      prevVideoDirection.background !== ctx.videoDirection.background
+      prevVideoDirection.background !== ctx.videoDirection.background ||
+      prevVoiceProfile.genderPreference !== ctx.voiceProfile.genderPreference ||
+      prevVoiceProfile.preset !== ctx.voiceProfile.preset
     );
   }, [ctx, presenter.context, presenterUseCaseRaw]);
 
@@ -1183,6 +1225,73 @@ export default function ScriptEditor({
                 <div className="text-sm text-white/75 leading-relaxed">
                   {ctx.videoDirection.shot}, {ctx.videoDirection.delivery}, {ctx.videoDirection.movement},{" "}
                   {ctx.videoDirection.background}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/10">
+              <div className="text-sm font-semibold">Voice Override</div>
+              <div className="text-xs text-white/50 mt-1">
+                Manual control for voice gender and voice preset.
+              </div>
+            </div>
+
+            <div className="p-5 space-y-5">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Voice Gender</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "auto", label: "Auto" },
+                    { value: "female", label: "Female Voice" },
+                    { value: "male", label: "Male Voice" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.voiceProfile.genderPreference === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          voiceProfile: { ...p.voiceProfile, genderPreference: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Voice Preset</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "auto", label: "Auto" },
+                    { value: "shimmer", label: "Shimmer" },
+                    { value: "alloy", label: "Alloy" },
+                    { value: "marin", label: "Marin" },
+                    { value: "cedar", label: "Cedar" },
+                    { value: "verse", label: "Verse" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.voiceProfile.preset === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          voiceProfile: { ...p.voiceProfile, preset: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Current voice profile</div>
+                <div className="text-sm text-white/75 leading-relaxed">
+                  Gender: {ctx.voiceProfile.genderPreference} • Preset: {getVoicePresetLabel(ctx.voiceProfile.preset)}
                 </div>
               </div>
             </div>
