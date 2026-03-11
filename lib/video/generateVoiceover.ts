@@ -37,14 +37,17 @@ function getProjectRefFromUrl(url: string) {
   }
 }
 
+function normalizeText(v: any, max = 500) {
+  if (typeof v !== "string") return "";
+  return v.trim().slice(0, max);
+}
+
 /**
  * Heuristic language detect (lightweight).
- * - Prefer script.language if present.
  */
 function detectLang(scriptLanguage: any, text: string): string {
   const raw = String(scriptLanguage || "").trim().toLowerCase();
   if (raw) {
-    // normalize common forms
     if (raw.startsWith("ro")) return "ro";
     if (raw.startsWith("en")) return "en";
     if (raw.startsWith("fr")) return "fr";
@@ -53,34 +56,80 @@ function detectLang(scriptLanguage: any, text: string): string {
     if (raw.startsWith("it")) return "it";
     if (raw.startsWith("pt")) return "pt";
     if (raw.startsWith("nl")) return "nl";
-    // otherwise keep short
     return raw.slice(0, 8);
   }
 
-  // Romanian diacritics heuristic
-  if (/[ăâîșţț]/i.test(text)) return "ro";
-
-  // fallback
+  if (/[ăâîșşţț]/i.test(text)) return "ro";
   return "en";
 }
 
-/**
- * Remove "meta" lines that your UI might prepend/append:
- * - tone / industry / audience / location / style etc.
- * - headings like "Scene / Context"
- * - bracket-like labels
- *
- * Goal: TTS should speak ONLY the actual script.
- */
+function getUseCaseFromData(presenter: AnyRow | null, tone: AnyRow | null) {
+  const fromPresenter = normalizeText(presenter?.use_case, 80);
+  if (fromPresenter) return fromPresenter;
+
+  const fromTone = normalizeText(tone?.useCase, 80);
+  if (fromTone) return fromTone;
+
+  return "business_spokesperson";
+}
+
+function getVoiceStyleFromData(
+  presenterContext: AnyRow | null,
+  tone: AnyRow | null,
+  useCase: string
+) {
+  const explicitA = normalizeText(presenterContext?.voiceStyle, 80);
+  if (explicitA) return explicitA;
+
+  const explicitB = normalizeText(tone?.voiceStyle, 80);
+  if (explicitB) return explicitB;
+
+  switch (useCase) {
+    case "sales_outreach":
+      return "energetic";
+    case "founder_ceo":
+      return "authoritative";
+    case "product_explainer":
+      return "clear";
+    case "business_spokesperson":
+    default:
+      return "premium";
+  }
+}
+
+function getDeliveryFromData(
+  presenterContext: AnyRow | null,
+  tone: AnyRow | null,
+  voiceStyle: string
+) {
+  const direct =
+    normalizeText(presenterContext?.videoDirection?.delivery, 80) ||
+    normalizeText(tone?.videoDirection?.delivery, 80) ||
+    normalizeText(presenterContext?.delivery, 80) ||
+    normalizeText(tone?.delivery, 80);
+
+  if (direct) return direct.toLowerCase();
+
+  switch (voiceStyle) {
+    case "energetic":
+      return "energetic";
+    case "authoritative":
+      return "executive";
+    case "clear":
+      return "clear";
+    case "premium":
+    default:
+      return "calm";
+  }
+}
+
 function stripMetaAndNormalizeForTts(input: string): string {
   let t = String(input || "");
 
-  // normalize newlines
   t = t.replace(/\r\n/g, "\n");
 
-  // Remove obvious UI section headings (EN/RO) and label lines
-  // We remove lines like: "TONE: premium", "Industry / Domain: business", etc.
-  const labelLine = /^(?:\s*)(?:scene\s*\/\s*context|context|location|industry\s*\/\s*domain|industry|domain|audience|tone|energy|communication\s*style|style|gender|age\s*range|limbă|limba|ton|energie|stil|audien[țt]ă|domeniu|industrie|loca[țt]ie)\s*[:\-].*$/i;
+  const labelLine =
+    /^(?:\s*)(?:scene\s*\/\s*context|context|location|industry\s*\/\s*domain|industry|domain|audience|tone|energy|communication\s*style|style|gender|age\s*range|limbă|limba|ton|energie|stil|audien[țt]ă|domeniu|industrie|loca[țt]ie|voice\s*delivery\s*style|use\s*case|video\s*direction|shot|delivery|movement|background|current\s*direction)\s*[:\-].*$/i;
 
   const lines = t.split("\n");
   const kept: string[] = [];
@@ -92,15 +141,16 @@ function stripMetaAndNormalizeForTts(input: string): string {
       continue;
     }
 
-    // drop label lines
     if (labelLine.test(l)) continue;
 
-    // drop lines that are just tags like: "premium, friendly, authoritative"
-    if (/^(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant)(?:\s*,\s*(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant))*$/i.test(l)) {
+    if (
+      /^(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant|energetic|clear)(?:\s*,\s*(?:premium|friendly|authoritative|strategic|cinematic|ultra[-\s]?minimal|calm|executive|charismatic|dominant|energetic|clear))*$/i.test(
+        l
+      )
+    ) {
       continue;
     }
 
-    // drop UI hints / placeholders
     if (/^write your script/i.test(l)) continue;
     if (/^script\s*\(preview\)/i.test(l)) continue;
 
@@ -109,26 +159,25 @@ function stripMetaAndNormalizeForTts(input: string): string {
 
   t = kept.join("\n");
 
-  // Remove markdown noise that can make it sound robotic
   t = t
-    .replace(/```[\s\S]*?```/g, "")      // code blocks
-    .replace(/`([^`]+)`/g, "$1")         // inline code
-    .replace(/^#{1,6}\s+/gm, "")         // headings
-    .replace(/^\s*[-*•]\s+/gm, "")       // bullets
-    .replace(/\[(.*?)\]\((.*?)\)/g, "$1"); // markdown links
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\s+\|\s+/g, " ")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'");
 
-  // Collapse excessive whitespace but keep paragraph pauses
   t = t
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  // If it starts with a meta paragraph (common), try to cut until first “real” sentence.
-  // (very conservative: only if we see ":", and looks like config)
   if (t.length > 0) {
     const firstPara = t.split("\n\n")[0] || "";
     if (firstPara.includes(":") && firstPara.length < 220) {
-      // if first paragraph is mostly key:value-ish, drop it
       const kvish = firstPara.split("\n").every((ln) => ln.includes(":"));
       if (kvish) {
         t = t.split("\n\n").slice(1).join("\n\n").trim();
@@ -136,30 +185,112 @@ function stripMetaAndNormalizeForTts(input: string): string {
     }
   }
 
-  // Ensure ending punctuation helps cadence
   if (t && !/[.!?…]\s*$/.test(t)) t += ".";
 
   return t;
 }
 
-/**
- * Voice selection
- * You can override via env:
- * - VOICEOVER_VOICE=marin (or cedar, shimmer, verse, etc.)
- *
- * Voices list includes: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar. :contentReference[oaicite:1]{index=1}
- */
-function pickVoice(lang: string): string {
+function shapeCadenceForTts(
+  rawText: string,
+  opts: {
+    lang: string;
+    delivery: string;
+    voiceStyle: string;
+    useCase: string;
+  }
+) {
+  let t = rawText;
+
+  t = t.replace(/\s+/g, " ").trim();
+
+  // normalize punctuation for more stable cadence
+  t = t
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s*;\s*/g, ". ")
+    .replace(/\s*:\s*/g, ". ")
+    .replace(/\s*\.\s*/g, ". ")
+    .replace(/\s*\?\s*/g, "? ")
+    .replace(/\s*!\s*/g, "! ")
+    .replace(/\.{2,}/g, ".")
+    .trim();
+
+  const delivery = opts.delivery.toLowerCase();
+  const voiceStyle = opts.voiceStyle.toLowerCase();
+
+  // For calmer / more executive reads, create more intentional pauses.
+  if (
+    delivery === "calm" ||
+    delivery === "executive" ||
+    voiceStyle === "premium" ||
+    voiceStyle === "authoritative"
+  ) {
+    t = t
+      .replace(/,\s+(și|iar|dar|însă)\s+/gi, ". $1 ")
+      .replace(/,\s+(and|but|while|yet)\s+/gi, ". $1 ");
+  }
+
+  // For clarity, simplify cadence a bit.
+  if (delivery === "clear" || voiceStyle === "clear") {
+    t = t
+      .replace(/,\s+/g, ". ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  // For energetic, keep it tight and more punchy.
+  if (delivery === "energetic" || voiceStyle === "energetic") {
+    t = t
+      .replace(/,\s+/g, ", ")
+      .replace(/\. ([A-ZĂÂÎȘȚ])/g, ". $1")
+      .trim();
+  }
+
+  // mild paragraph pauses every ~2 sentences for premium reads
+  if (
+    delivery === "calm" ||
+    delivery === "executive" ||
+    voiceStyle === "premium" ||
+    voiceStyle === "authoritative"
+  ) {
+    const parts = t.split(/(?<=[.!?])\s+/).filter(Boolean);
+    if (parts.length >= 4) {
+      const grouped: string[] = [];
+      for (let i = 0; i < parts.length; i += 2) {
+        grouped.push(parts.slice(i, i + 2).join(" "));
+      }
+      t = grouped.join("\n\n");
+    }
+  }
+
+  if (t && !/[.!?…]\s*$/.test(t)) t += ".";
+
+  return t.trim();
+}
+
+function pickVoice(lang: string, delivery: string, voiceStyle: string): string {
   const override = (process.env.VOICEOVER_VOICE || "").trim();
   if (override) return override;
 
-  // Simple defaults:
-  // - For RO, "cedar" often sounds fuller/less “nasal” than alloy
-  // - For EN, "marin" tends to sound more natural
-  if (lang === "ro") return "cedar";
-  if (lang === "en") return "marin";
+  const d = delivery.toLowerCase();
+  const v = voiceStyle.toLowerCase();
 
-  // fallback
+  if (lang === "ro") {
+    if (d === "energetic" || v === "energetic") return "verse";
+    if (d === "clear" || v === "clear") return "marin";
+    if (d === "executive" || v === "authoritative") return "cedar";
+    return "cedar";
+  }
+
+  if (lang === "en") {
+    if (d === "energetic" || v === "energetic") return "shimmer";
+    if (d === "clear" || v === "clear") return "marin";
+    if (d === "executive" || v === "authoritative") return "cedar";
+    return "marin";
+  }
+
+  if (d === "energetic" || v === "energetic") return "shimmer";
+  if (d === "clear" || v === "clear") return "marin";
+  if (d === "executive" || v === "authoritative") return "cedar";
   return "marin";
 }
 
@@ -188,10 +319,13 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const scriptId = String(job.script_id || "");
   if (!scriptId) throw new Error("Job missing script_id");
 
+  const presenterId = String(job.presenter_id || "");
+  if (!presenterId) throw new Error("Job missing presenter_id");
+
   // 2) get script
   const { data: scriptRaw, error: scriptErr } = await supabase
     .from("presenter_scripts")
-    .select("content, language")
+    .select("content, language, tone")
     .eq("id", scriptId)
     .maybeSingle();
 
@@ -199,17 +333,49 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const script = scriptRaw as AnyRow | null;
   if (!script) throw new Error("Script not found");
 
+  // 3) get presenter context / use case
+  const { data: presenterRaw, error: presenterErr } = await supabase
+    .from("presenters")
+    .select("id,name,context,use_case")
+    .eq("id", presenterId)
+    .maybeSingle();
+
+  if (presenterErr) throw new Error(`presenter_fetch_failed: ${presenterErr.message}`);
+  const presenter = presenterRaw as AnyRow | null;
+  if (!presenter) throw new Error("Presenter not found");
+
   const rawText = String(script.content || "").trim();
   if (!rawText) throw new Error("Script is empty (nothing to synthesize).");
 
   const lang = detectLang(script.language, rawText);
-  const voice = pickVoice(lang);
+  const tone = script?.tone && typeof script.tone === "object" ? (script.tone as AnyRow) : {};
+  const presenterContext =
+    presenter?.context && typeof presenter.context === "object"
+      ? (presenter.context as AnyRow)
+      : {};
 
-  // ✅ clean text so it does NOT read tone/context labels
-  const text = stripMetaAndNormalizeForTts(rawText);
-  if (!text) throw new Error("After cleanup, script became empty (check meta stripping rules).");
+  const useCase = getUseCaseFromData(presenter, tone);
+  const voiceStyle = getVoiceStyleFromData(presenterContext, tone, useCase);
+  const delivery = getDeliveryFromData(presenterContext, tone, voiceStyle);
+  const voice = pickVoice(lang, delivery, voiceStyle);
 
-  // 3) mark step processing
+  const cleanedText = stripMetaAndNormalizeForTts(rawText);
+  if (!cleanedText) {
+    throw new Error("After cleanup, script became empty (check meta stripping rules).");
+  }
+
+  const text = shapeCadenceForTts(cleanedText, {
+    lang,
+    delivery,
+    voiceStyle,
+    useCase,
+  });
+
+  if (!text) {
+    throw new Error("After cadence shaping, script became empty.");
+  }
+
+  // 4) mark step processing
   const now = new Date().toISOString();
   const { error: stepStartErr } = await supabase
     .from("video_render_steps")
@@ -225,7 +391,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   if (stepStartErr) throw new Error(`voiceover_step_update_failed: ${stepStartErr.message}`);
 
-  // 4) generate TTS
+  // 5) generate TTS
   const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
   const speech = await openai.audio.speech.create({
@@ -237,7 +403,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const buffer = Buffer.from(await speech.arrayBuffer());
   if (!buffer?.length) throw new Error("TTS returned empty audio buffer.");
 
-  // 5) upload to storage
+  // 6) upload to storage
   const bucket = "renders";
   const path = `voiceovers/${jobId}.mp3`;
 
@@ -249,7 +415,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   if (uploadError) throw new Error(`storage_upload_failed: ${uploadError.message}`);
 
-  // 6) signed url
+  // 7) signed url
   const { data: signed, error: signedErr } = await supabase.storage
     .from(bucket)
     .createSignedUrl(path, 60 * 60 * 24 * 7);
@@ -258,7 +424,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   const signedUrl = signed?.signedUrl ?? null;
 
-  // 7) create asset
+  // 8) create asset
   const { error: assetErr } = await supabase.from("video_assets").insert(
     {
       job_id: jobId,
@@ -273,14 +439,18 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
         usedUrl,
         lang,
         voice,
+        voiceStyle,
+        delivery,
+        useCase,
         cleaned: true,
+        presenterName: normalizeText(presenter?.name, 120) || null,
       },
     } as any
   );
 
   if (assetErr) throw new Error(`asset_insert_failed: ${assetErr.message}`);
 
-  // 8) complete step
+  // 9) complete step
   const doneAt = new Date().toISOString();
   const { error: stepDoneErr } = await supabase
     .from("video_render_steps")

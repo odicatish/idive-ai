@@ -71,6 +71,7 @@ function extractSignedUrl(vo: any): string | null {
   if (typeof vo?.signedUrl === "string") return vo.signedUrl;
   if (typeof vo?.voiceUrl === "string") return vo.voiceUrl;
   if (typeof vo?.url === "string") return vo.url;
+  if (typeof vo?.audioUrl === "string") return vo.audioUrl;
   return null;
 }
 
@@ -103,7 +104,6 @@ async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
   if (fetchErr) throw new Error(`pipeline_fetch_failed: ${fetchErr.message}`);
   if (!pipelineJob?.id) throw new Error("pipeline_job_missing_after_upsert");
 
-  // seed steps (best-effort)
   try {
     await supabase.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {}
@@ -124,7 +124,6 @@ async function getFreshSignedAudioUrl(supabase: any, pipelineJobId: string) {
 
   if (error || !asset) return { ok: false as const, audioUrl: null as string | null };
 
-  // Prefer fresh signed URL (public_url may expire)
   if (asset.storage_bucket && asset.storage_path) {
     const { data: signed, error: sErr } = await supabase.storage
       .from(asset.storage_bucket)
@@ -135,7 +134,6 @@ async function getFreshSignedAudioUrl(supabase: any, pipelineJobId: string) {
     }
   }
 
-  // fallback (maybe still valid)
   return { ok: true as const, audioUrl: (asset.public_url ?? null) as string | null };
 }
 
@@ -170,7 +168,12 @@ async function renderMp4ViaRailway(pipelineJobId: string, audioUrl: string) {
   }
 
   if (!r.ok) {
-    return { ok: false as const, reason: "railway_render_failed", status: r.status, response: json };
+    return {
+      ok: false as const,
+      reason: "railway_render_failed",
+      status: r.status,
+      response: json,
+    };
   }
 
   return { ok: true as const, mp4Url: json?.mp4Url ?? null, response: json };
@@ -191,16 +194,13 @@ async function legacyHasMp4Asset(supabase: any, pipelineJobId: string) {
 async function mp4OnlyForLegacyJob(supabase: any, legacyJob: any) {
   const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, legacyJob);
 
-  // if already has mp4, don't redo
   const already = await legacyHasMp4Asset(supabase, pipelineJobId);
   if (already) {
     return { didWork: false as const, reason: "mp4_already_exists", pipelineJobId };
   }
 
-  // we need an audioUrl (voiceover)
   let audio = await getFreshSignedAudioUrl(supabase, pipelineJobId);
 
-  // if missing audio, generate it now
   if (!audio.ok || !audio.audioUrl) {
     const vo = await generateVoiceoverForJob(pipelineJobId);
     const signedUrl = extractSignedUrl(vo);
@@ -215,7 +215,6 @@ async function mp4OnlyForLegacyJob(supabase: any, legacyJob: any) {
 
   const mp4Url = mp4.mp4Url ?? null;
 
-  // update legacy job to point to mp4
   await supabase
     .from("presenter_video_jobs")
     .update({
@@ -226,7 +225,6 @@ async function mp4OnlyForLegacyJob(supabase: any, legacyJob: any) {
     })
     .eq("id", legacyJob.id);
 
-  // update pipeline job too (best-effort)
   try {
     await supabase
       .from("video_render_jobs")
@@ -247,7 +245,6 @@ async function processLegacyJobQueued(supabase: any, legacyJobId: string) {
   if (fetchErr) throw new Error(`legacy_fetch_failed: ${fetchErr.message}`);
   if (!job) throw new Error("legacy_job_not_found");
 
-  // lock only if queued
   const nowIso = new Date().toISOString();
   const { data: locked, error: lockErr } = await supabase
     .from("presenter_video_jobs")
@@ -265,12 +262,10 @@ async function processLegacyJobQueued(supabase: any, legacyJobId: string) {
   if (lockErr) throw new Error(`legacy_lock_failed: ${lockErr.message}`);
   if (!locked) return { didWork: false as const, reason: "legacy_not_queued_anymore" };
 
-  // Create pipeline + voiceover
   const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, locked);
   const vo = await generateVoiceoverForJob(pipelineJobId);
   const signedUrl = extractSignedUrl(vo);
 
-  // Try mp4
   let mp4Url: string | null = null;
   let mp4Debug: any = null;
   if (signedUrl) {
@@ -279,7 +274,6 @@ async function processLegacyJobQueued(supabase: any, legacyJobId: string) {
     if (mp4.ok && mp4.mp4Url) mp4Url = mp4.mp4Url;
   }
 
-  // finalize legacy
   await supabase
     .from("presenter_video_jobs")
     .update({
@@ -332,7 +326,6 @@ export async function POST(req: Request) {
 
     const supabase = sb.client;
 
-    // jobId optional (?jobId=uuid) — legacy presenter_video_jobs.id
     let jobId = "";
     try {
       const url = new URL(req.url);
@@ -340,7 +333,6 @@ export async function POST(req: Request) {
     } catch {}
 
     if (jobId) {
-      // If queued -> normal flow, else -> mp4-only upgrade
       const { data: legacy, error } = await supabase
         .from("presenter_video_jobs")
         .select("*")
@@ -355,12 +347,10 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, ...out, ran: "queued_by_jobId" });
       }
 
-      // status completed/processing -> try mp4 only
       const out = await mp4OnlyForLegacyJob(supabase, legacy);
       return NextResponse.json({ ok: true, ...out, legacyJobId: jobId, ran: "mp4_only_by_jobId" });
     }
 
-    // 1) try next queued
     const { data: queued, error: pickErr } = await supabase
       .from("presenter_video_jobs")
       .select("id")
@@ -376,7 +366,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, ...out, ran: "queued_next" });
     }
 
-    // 2) no queued -> pick latest completed legacy and try mp4-only
     const { data: latest, error: lErr } = await supabase
       .from("presenter_video_jobs")
       .select("*")
@@ -386,7 +375,13 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (lErr) return jsonError(500, "latest_completed_fetch_failed", lErr.message);
-    if (!latest) return NextResponse.json({ ok: true, didWork: false, message: "No queued jobs and no completed jobs." });
+    if (!latest) {
+      return NextResponse.json({
+        ok: true,
+        didWork: false,
+        message: "No queued jobs and no completed jobs.",
+      });
+    }
 
     const out = await mp4OnlyForLegacyJob(supabase, latest);
     return NextResponse.json({ ok: true, ...out, legacyJobId: latest.id, ran: "mp4_only_latest_completed" });
