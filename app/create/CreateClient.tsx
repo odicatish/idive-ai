@@ -49,6 +49,12 @@ const USE_CASES = [
   },
 ];
 
+const GENDER_OPTIONS = [
+  { id: "male", label: "Male" },
+  { id: "female", label: "Female" },
+  { id: "any", label: "Any" },
+];
+
 export default function CreateClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -165,6 +171,7 @@ export default function CreateClient() {
       const r = await postJSON("/api/video-jobs/create", { presenterId: presenter.id });
 
       const jobId = r?.job?.id;
+      if (!jobId) throw new Error("Missing job id.");
 
       setJob({ id: jobId, status: "queued", progress: 0, error: null, videoUrl: null });
 
@@ -224,7 +231,7 @@ export default function CreateClient() {
       <div className="min-h-screen bg-black flex items-center justify-center px-6 text-white">
         <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-md w-full border border-neutral-800">
           {presenter.image && (
-            <img src={presenter.image} className="w-full aspect-[3/4] object-cover" />
+            <img src={presenter.image} className="w-full aspect-[3/4] object-cover" alt="Presenter" />
           )}
 
           <div className="p-8 text-center">
@@ -240,10 +247,37 @@ export default function CreateClient() {
 
             <button
               onClick={createVideoJob}
-              className="w-full mt-4 py-4 bg-neutral-800 rounded-xl font-semibold"
+              disabled={jobBusy}
+              className="w-full mt-4 py-4 bg-neutral-800 rounded-xl font-semibold disabled:opacity-60"
             >
-              Generate Video
+              {jobBusy ? "Working..." : "Generate Video"}
             </button>
+
+            {jobMsg && <div className="mt-4 text-sm text-neutral-300">{jobMsg}</div>}
+
+            {job && (
+              <div className="mt-4 rounded-xl border border-neutral-800 bg-black/30 p-4 text-left">
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <span>Status: {job.status}</span>
+                  <span>{job.progress}%</span>
+                </div>
+
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+                  <div className="h-2 bg-white" style={{ width: `${job.progress}%` }} />
+                </div>
+
+                {job.videoUrl && (
+                  <a
+                    href={job.videoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-block text-sm underline text-white/90 hover:text-white"
+                  >
+                    Open video
+                  </a>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -253,13 +287,11 @@ export default function CreateClient() {
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
       <div className="w-full max-w-4xl">
-
         <h1 className="text-5xl font-bold text-center mb-12">
           Identity Control Panel
         </h1>
 
-        {/* USE CASE */}
-        <div className="mb-12">
+        <div className="mb-10">
           <p className="text-neutral-400 mb-4">Video Type</p>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -280,7 +312,26 @@ export default function CreateClient() {
           </div>
         </div>
 
-        {/* PROMPT */}
+        <div className="mb-10">
+          <p className="text-neutral-400 mb-4">Gender</p>
+
+          <div className="flex flex-wrap gap-3">
+            {GENDER_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setGender(option.id)}
+                className={`px-4 py-2 rounded-full border transition ${
+                  gender === option.id
+                    ? "bg-white text-black border-white"
+                    : "border-neutral-700 hover:border-neutral-400"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
