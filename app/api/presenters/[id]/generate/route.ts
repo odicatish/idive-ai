@@ -82,20 +82,39 @@ function getUseCaseInstruction(useCase: string) {
       return `
 USE CASE: SALES OUTREACH VIDEO
 
-Goal:
-Create a short persuasive video for prospecting, outreach, or lead generation.
+Primary goal:
+Create a short outbound video that earns attention fast and makes the next step feel easy.
+
+What the script must achieve:
+- sound relevant to a potential buyer quickly
+- show that we understand a real business pain
+- make the value feel concrete, not vague
+- end with a low-friction CTA
 
 What this should feel like:
 - direct
 - warm
 - credible
-- fast value communication
+- commercially sharp
+- concise
 
-Recommended structure:
-1. quick hook
-2. identify the pain/problem
-3. clear solution/value
-4. simple CTA
+Recommended flow:
+1. pattern-interrupt hook
+2. pain / missed opportunity
+3. practical value or result
+4. very simple next step
+
+CTA style:
+- low pressure
+- easy to say yes to
+- examples: book a demo, take a look, see how it works, have a quick conversation
+
+Avoid:
+- fake personalization
+- buzzwords
+- long setup
+- sounding like a mass cold email
+- aggressive closing language
 
 Duration target:
 15–25 seconds spoken.
@@ -105,20 +124,39 @@ Duration target:
       return `
 USE CASE: FOUNDER / CEO MESSAGE
 
-Goal:
-Create a leadership-style message that communicates mission, vision, or strategic direction.
+Primary goal:
+Create a leadership message that builds trust, clarity, and belief in the company direction.
+
+What the script must achieve:
+- sound like a real founder or executive speaking
+- communicate conviction without sounding promotional
+- make the audience understand what matters now
+- leave a strong sense of direction or commitment
 
 What this should feel like:
 - executive
 - authentic
 - calm authority
 - trust-building
+- human
 
-Recommended structure:
-1. founder perspective
-2. what matters now
-3. vision / mission / belief
-4. invitation to move forward
+Recommended flow:
+1. grounded opening from leadership perspective
+2. what is changing or what matters now
+3. company belief, mission, or direction
+4. invitation to move forward together
+
+CTA style:
+- measured
+- confidence-building
+- aligned with trust, not hard sell
+
+Avoid:
+- exaggerated hype
+- cheesy inspiration
+- ad-like phrasing
+- empty mission statements
+- generic corporate jargon
 
 Duration target:
 20–35 seconds spoken.
@@ -128,21 +166,39 @@ Duration target:
       return `
 USE CASE: PRODUCT EXPLAINER
 
-Goal:
-Explain clearly what the product does and why it matters.
+Primary goal:
+Explain clearly what the product does, how it helps, and why the viewer should care.
+
+What the script must achieve:
+- make the product understandable fast
+- connect the product to a real problem
+- explain the value in plain language
+- make the result or outcome easy to picture
 
 What this should feel like:
 - clear
-- simple
 - structured
+- practical
 - easy to follow
+- useful
 
-Recommended structure:
-1. hook
-2. problem
-3. how it works
-4. outcome / benefit
+Recommended flow:
+1. sharp hook
+2. problem or friction
+3. what the product does
+4. how it helps or what changes
 5. CTA when appropriate
+
+CTA style:
+- focused on seeing the product or understanding it better
+- examples: see it in action, explore how it works, try it, watch a demo
+
+Avoid:
+- feature dumping
+- technical overload
+- vague claims
+- long background context
+- complicated sentence structure
 
 Duration target:
 25–40 seconds spoken.
@@ -153,20 +209,40 @@ Duration target:
       return `
 USE CASE: BUSINESS SPOKESPERSON
 
-Goal:
-Represent the company in a polished, premium, professional way.
+Primary goal:
+Represent the company in a polished, premium way that builds trust and makes the offer feel credible.
+
+What the script must achieve:
+- position the company clearly
+- communicate value in a business-safe way
+- feel polished enough for website, landing page, or brand video use
+- end with a CTA that supports conversion
 
 What this should feel like:
 - trustworthy
 - polished
 - premium
 - brand-safe
+- confident
 
-Recommended structure:
-1. strong hook
+Recommended flow:
+1. strong business-relevant hook
 2. what the company does
-3. why it matters
+3. why it matters / outcome
 4. CTA
+
+CTA style:
+- clear
+- professional
+- conversion-friendly
+- not pushy
+
+Avoid:
+- generic agency language
+- overclaiming
+- overexcited ad copy
+- empty superlatives
+- robotic brand slogans
 
 Duration target:
 20–30 seconds spoken.
@@ -188,6 +264,113 @@ function getVoiceStyle(useCase: string, context: Record<string, any>) {
     case "business_spokesperson":
     default:
       return "premium";
+  }
+}
+
+function getLengthRule(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return "50–110 words";
+    case "founder_ceo":
+      return "90–170 words";
+    case "product_explainer":
+      return "90–170 words";
+    case "business_spokesperson":
+    default:
+      return "80–150 words";
+  }
+}
+
+function getHookRule(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return "The hook must earn attention in the first sentence and should usually be 1 short sentence, maximum 2.";
+    case "founder_ceo":
+      return "The hook should sound grounded and credible, not dramatic. Maximum 2 sentences.";
+    case "product_explainer":
+      return "The hook should create clarity fast and frame the product problem. Maximum 2 sentences.";
+    case "business_spokesperson":
+    default:
+      return "The hook should position the company confidently and professionally. Maximum 2 sentences.";
+  }
+}
+
+function getCtaRule(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return "CTA must be exactly 1 sentence and feel low-friction, natural, and easy to accept.";
+    case "founder_ceo":
+      return "CTA must be exactly 1 sentence and feel measured, confident, and trust-building.";
+    case "product_explainer":
+      return "CTA must be exactly 1 sentence and should invite the viewer to see, try, or explore the product.";
+    case "business_spokesperson":
+    default:
+      return "CTA must be exactly 1 sentence and should feel professional, clear, and conversion-friendly.";
+  }
+}
+
+function getUseCaseCommercialGuidance(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return `
+Commercial intent:
+- prioritize relevance over brand storytelling
+- make the value tangible quickly
+- imply business upside such as more pipeline, faster follow-up, clearer messaging, or better conversion
+- the viewer should feel: "this is relevant to me and worth a quick reply"
+
+Preferred body behavior:
+- short sentences
+- minimal setup
+- one main pain
+- one clear value angle
+- one easy CTA
+`.trim();
+
+    case "founder_ceo":
+      return `
+Commercial intent:
+- strengthen trust in leadership, direction, and seriousness
+- support credibility, authority, and brand confidence
+- the viewer should feel: "this company knows where it is going"
+
+Preferred body behavior:
+- perspective-led wording
+- strategic clarity
+- emotionally controlled language
+- no hard sell unless the draft clearly calls for it
+`.trim();
+
+    case "product_explainer":
+      return `
+Commercial intent:
+- reduce confusion
+- increase understanding
+- make the value easy to picture in real use
+- the viewer should feel: "now I get it, and I can see why it matters"
+
+Preferred body behavior:
+- explain the before and after
+- simplify complexity
+- connect features to outcomes
+- keep the flow logical and easy to speak
+`.trim();
+
+    case "business_spokesperson":
+    default:
+      return `
+Commercial intent:
+- increase trust
+- improve company positioning
+- make the business appear credible, premium, and easy to understand
+- the viewer should feel: "this company looks professional and worth considering"
+
+Preferred body behavior:
+- clear positioning
+- concise value framing
+- business-safe language
+- polished finish
+`.trim();
   }
 }
 
@@ -345,13 +528,17 @@ export async function POST(req: Request, context: any) {
     ...uiContext,
   };
 
-  const useCase = normalizeText((presenter as any)?.use_case) || normalizeText(merged?.useCase) || "business_spokesperson";
+  const useCase =
+    normalizeText((presenter as any)?.use_case) ||
+    normalizeText(merged?.useCase) ||
+    "business_spokesperson";
+
   const voiceStyle = getVoiceStyle(useCase, merged);
 
   const tone = normalizeText(merged?.tone) || "premium";
   const visual = normalizeText(merged?.visual) || "apple-cinematic";
   const location = normalizeText(merged?.location);
-  const domain = normalizeText(merged?.domain);
+  const domain = normalizeText(merged?.domain || merged?.industry);
   const audience = normalizeText(merged?.audience);
   const notes = normalizeText(merged?.notes);
 
@@ -407,11 +594,39 @@ export async function POST(req: Request, context: any) {
     required: ["language", "sections", "finalText"],
   } as const;
 
-  const system =
-    "You are a senior copywriter, creative director, and voiceover director for AI video presenters. " +
-    "Write natural, premium, spoken marketing copy that feels believable on camera. " +
-    "Avoid clichés, robotic patterns, filler, and generic ad language. " +
-    "Return ONLY valid JSON per the schema.";
+  const system = `
+You are a senior SaaS copywriter, creative director, and voiceover director for AI presenter videos.
+
+Your job:
+Write spoken video scripts that are commercially useful, clear on camera, and aligned to the use case.
+
+What "good" looks like:
+- believable spoken delivery
+- sharp business relevance
+- clean structure
+- strong but natural hook
+- clear value framing
+- CTA that matches the use case
+- premium wording without sounding generic
+
+Always optimize for:
+- clarity
+- usefulness
+- credibility
+- conversion intent
+- natural voiceover rhythm
+
+Avoid:
+- clichés
+- fake hype
+- robotic phrasing
+- generic ad copy
+- brochure language
+- bloated intros
+- vague claims
+
+Return ONLY valid JSON per the schema.
+`.trim();
 
   const user = `
 Return ONLY valid JSON matching the provided schema.
@@ -421,16 +636,23 @@ You are rewriting or generating spoken video script copy for an AI presenter.
 Hard rules:
 - Output language MUST be: ${targetLanguageName} (tag: ${languageTag})
 - If the current draft already has a clear language, preserve that language unless explicitly overridden
-- Length: 80–160 words unless the use case naturally needs slightly shorter copy
+- Total length target: ${getLengthRule(useCase)}
 - No bullet points
 - No headings
 - No emojis
 - No weird symbols
-- Hook: max 2 sentences
-- CTA: exactly 1 sentence
-- Body: short spoken sentences, easy to say out loud
+- Write for spoken delivery, not for reading on a page
+- Short to medium sentences only
+- The script should sound natural out loud
+- Keep the message focused around one main commercial idea
 - Avoid clichés, filler, and fake hype
-- Make it sound spoken on camera, not written for a brochure
+
+Hook / body / CTA rules:
+- ${getHookRule(useCase)}
+- Body should flow naturally from problem or context into value and outcome
+- ${getCtaRule(useCase)}
+- finalText must read like one clean final script ready for voiceover
+- sections.hook + sections.body + sections.cta should align with finalText
 
 Presenter / brand context:
 - Presenter name: ${normalizeText((presenter as any)?.name) || "not specified"}
@@ -446,11 +668,14 @@ Presenter / brand context:
 Use case direction:
 ${getUseCaseInstruction(useCase)}
 
+Commercial guidance:
+${getUseCaseCommercialGuidance(useCase)}
+
 Voice style rules:
-- premium = polished, calm, elegant
-- energetic = sharper, faster, more direct
-- authoritative = composed, executive, confident
-- clear = simple, structured, easy to follow
+- premium = polished, calm, elegant, brand-safe
+- energetic = sharper, faster, more direct, but still credible
+- authoritative = composed, executive, confident, controlled
+- clear = simple, structured, practical, easy to follow
 
 ${
   videoDirection.hasAny
@@ -458,7 +683,8 @@ ${
 ${videoDirection.text}
 
 Interpret video direction as on-camera delivery guidance.
-It should influence pacing, presence, and wording subtly.
+Let it influence pacing, emphasis, confidence, and wording subtly.
+Do not describe the direction literally inside the script unless the draft clearly requires it.
 `
     : ""
 }
@@ -466,11 +692,14 @@ It should influence pacing, presence, and wording subtly.
 Current draft:
 ${draftForAI}
 
-Output requirements:
-- hook should feel strong and spoken
-- body should be natural and camera-friendly
-- cta should feel appropriate for the use case
-- finalText must read like one clean final script ready for voiceover
+Quality bar:
+- The opening should earn attention quickly
+- The middle should make the value easy to understand
+- The CTA should feel appropriate for the specific use case
+- The copy should be commercially useful, not just polished
+- The script should feel like something a real company would actually publish
+
+Rewrite or generate the best possible final script now.
 `.trim();
 
   let jsonText = "";
@@ -484,7 +713,7 @@ Output requirements:
       text: {
         format: {
           type: "json_schema",
-          name: "ai_script_anylang_v3",
+          name: "ai_script_anylang_v4",
           strict: true,
           schema,
         },
@@ -509,9 +738,12 @@ Output requirements:
   if (!finalText) return jsonError(500, "ai_missing_finalText");
 
   const cleaned = finalText.replace(/\s+/g, " ").trim();
-  if (cleaned.length < 80) {
+  const minChars = useCase === "sales_outreach" ? 50 : 80;
+
+  if (cleaned.length < minChars) {
     return jsonError(422, "ai_output_too_short", {
       gotChars: cleaned.length,
+      minChars,
       preview: cleaned.slice(0, 120),
     });
   }
@@ -551,13 +783,17 @@ Output requirements:
     visual: visual || scriptTone?.visual || null,
     audience: audience || scriptTone?.audience || null,
     location: location || scriptTone?.location || null,
-    videoDirection: videoDirection.hasAny ? {
-      shot: normalizeText(merged?.videoDirection?.shot || merged?.shot),
-      delivery: normalizeText(merged?.videoDirection?.delivery || merged?.delivery),
-      movement: normalizeText(merged?.videoDirection?.movement || merged?.movement),
-      background: normalizeText(merged?.videoDirection?.background || merged?.background),
-      currentDirection: normalizeText(merged?.videoDirection?.currentDirection || merged?.currentDirection),
-    } : scriptTone?.videoDirection ?? null,
+    videoDirection: videoDirection.hasAny
+      ? {
+          shot: normalizeText(merged?.videoDirection?.shot || merged?.shot),
+          delivery: normalizeText(merged?.videoDirection?.delivery || merged?.delivery),
+          movement: normalizeText(merged?.videoDirection?.movement || merged?.movement),
+          background: normalizeText(merged?.videoDirection?.background || merged?.background),
+          currentDirection: normalizeText(
+            merged?.videoDirection?.currentDirection || merged?.currentDirection
+          ),
+        }
+      : scriptTone?.videoDirection ?? null,
   };
 
   const { error: upErr } = await supabase
