@@ -194,6 +194,20 @@ brand-safe, confident, concise.
   }
 }
 
+function getVoiceStyle(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return "energetic";
+    case "founder_ceo":
+      return "authoritative";
+    case "product_explainer":
+      return "clear";
+    case "business_spokesperson":
+    default:
+      return "premium";
+  }
+}
+
 export async function POST(req: Request) {
   try {
     let body: any = {};
@@ -217,15 +231,6 @@ export async function POST(req: Request) {
         : null;
 
     const ctxIn = body?.context && typeof body.context === "object" ? body.context : {};
-
-    const context = {
-      location: normalizeStr(ctxIn.location, 160),
-      domain: normalizeStr(ctxIn.domain, 120) || normalizeStr(body.industry, 120),
-      audience: normalizeStr(ctxIn.audience, 140),
-      tone: normalizeStr(ctxIn.tone, 40) || "premium",
-      visual: normalizeStr(ctxIn.visual, 60) || "apple-cinematic",
-      notes: normalizeStr(ctxIn.notes, 400),
-    };
 
     const genderIn =
       typeof body.gender === "string" && body.gender.trim()
@@ -252,6 +257,19 @@ export async function POST(req: Request) {
         ? body.style.trim()
         : "authoritative";
 
+    const voiceStyle = getVoiceStyle(useCase);
+
+    const context = {
+      location: normalizeStr(ctxIn.location, 160),
+      domain: normalizeStr(ctxIn.domain, 120) || normalizeStr(body.industry, 120),
+      audience: normalizeStr(ctxIn.audience, 140),
+      tone: normalizeStr(ctxIn.tone, 40) || "premium",
+      visual: normalizeStr(ctxIn.visual, 60) || "apple-cinematic",
+      notes: normalizeStr(ctxIn.notes, 400),
+      voiceStyle,
+      useCase,
+    };
+
     const genderRule =
       genderIn === "any"
         ? `Choose ONE gender: "male" or "female" and set it in the JSON field "gender".`
@@ -266,11 +284,13 @@ SCENE / BRAND CONTEXT:
 - Audience: ${context.audience || "not specified"}
 - Tone: ${context.tone}
 - Visual vibe: ${context.visual}
+- Voice delivery style: ${voiceStyle}
 - Notes: ${context.notes || "none"}
 
 INTERPRETATION RULE:
 Use this context as creative direction, not as metadata.
 It should influence the script naturally.
+The voice delivery style should shape rhythm, clarity, and attitude.
 `.trim();
 
     const response = await openai.responses.create({
@@ -285,6 +305,7 @@ BASE PROFILE:
 - Industry: ${context.domain || industry}
 - Energy: ${energy}
 - Style: ${style}
+- Voice delivery style: ${voiceStyle}
 
 ${useCaseInstruction}
 
@@ -309,6 +330,11 @@ SCRIPT RULES:
 - short clean sentences
 - clear spoken rhythm
 - target duration based on the chosen use case
+- match the requested voice delivery style:
+  - premium = polished, calm, elegant
+  - energetic = sharper, faster, more direct
+  - authoritative = composed, executive, confident
+  - clear = simple, structured, easy to follow
 - include CTA only when appropriate for that use case
 
 ${userPrompt ? `USER PROMPT:\n${userPrompt}` : ""}
@@ -440,6 +466,7 @@ extreme detail
           energy,
           style,
           useCase,
+          voiceStyle,
           audience: context.audience || null,
           tone: context.tone || null,
           visual: context.visual || null,
@@ -458,7 +485,7 @@ extreme detail
             content: scriptIns.data.content,
             version: scriptIns.data.version,
             source: "snapshot",
-            meta: { reason: "generate-script", useCase },
+            meta: { reason: "generate-script", useCase, voiceStyle },
             created_by: userId,
           },
           { onConflict: "script_id,version", ignoreDuplicates: true }
@@ -475,6 +502,7 @@ extreme detail
       prompt: userPrompt,
       context,
       useCase,
+      voiceStyle,
     });
   } catch (error: any) {
     console.error("AI ROUTE ERROR:", error);
