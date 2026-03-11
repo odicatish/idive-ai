@@ -23,7 +23,7 @@ export default async function StudioPage({ params }: { params: Params }) {
 
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
-    .select("id,user_id,name,context")
+    .select("id,user_id,name,context,use_case")
     .eq("id", presenterId)
     .maybeSingle();
 
@@ -66,7 +66,6 @@ export default async function StudioPage({ params }: { params: Params }) {
 
     script = inserted;
 
-    // ✅ history (best effort, ignore duplicates)
     const { error: histErr } = await supabase
       .from("presenter_script_versions")
       .upsert(
@@ -91,6 +90,7 @@ export default async function StudioPage({ params }: { params: Params }) {
           id: presenter.id,
           name: (presenter as any).name ?? "Untitled Presenter",
           context: (presenter as any).context ?? {},
+          useCase: (presenter as any).use_case ?? null,
         }}
         initialScript={{
           id: script.id,
