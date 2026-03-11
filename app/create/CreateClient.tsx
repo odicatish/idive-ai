@@ -23,7 +23,6 @@ type VideoJob = {
   status: string;
   progress: number;
   error: string | null;
-  // ✅ use mp4 url from video-status
   videoUrl: string | null;
 };
 
@@ -36,6 +35,9 @@ export default function CreateClient() {
   const [presenter, setPresenter] = useState<Presenter | null>(null);
 
   const [prompt, setPrompt] = useState("");
+
+  // ✅ use case mode
+  const [useCase, setUseCase] = useState("business_spokesperson");
 
   // video job state
   const [job, setJob] = useState<VideoJob | null>(null);
@@ -65,7 +67,6 @@ export default function CreateClient() {
     window.location.href = `/login?next=${next}`;
   };
 
-  // session guard
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -73,7 +74,6 @@ export default function CreateClient() {
     })();
   }, [supabase]);
 
-  // loader step text
   useEffect(() => {
     if (phase !== "loading") return;
     setStepIndex(0);
@@ -81,7 +81,6 @@ export default function CreateClient() {
     return () => clearInterval(i);
   }, [phase, steps]);
 
-  // After Stripe redirect: poll /api/stripe/status (păstrez cum îl aveai)
   useEffect(() => {
     const checkout = searchParams.get("checkout");
     if (checkout !== "success") return;
@@ -136,7 +135,6 @@ export default function CreateClient() {
     return res.json();
   };
 
-  // generate presenter (same)
   const generateHuman = async () => {
     setJob(null);
     setJobMsg(null);
@@ -150,6 +148,7 @@ export default function CreateClient() {
         energy,
         style,
         prompt,
+        useCase,
       });
 
       if (!data) return;
@@ -163,7 +162,6 @@ export default function CreateClient() {
     }
   };
 
-  // --- VIDEO JOB FLOW ---
   const createVideoJob = async () => {
     if (!presenter?.id) {
       alert("Missing presenter id. Generate first.");
@@ -175,7 +173,6 @@ export default function CreateClient() {
     setJob(null);
 
     try {
-      // 1) create job (server will pick latest script for presenter)
       const r = await postJSON("/api/video-jobs/create", { presenterId: presenter.id });
       if (!r) return;
 
@@ -185,12 +182,10 @@ export default function CreateClient() {
       setJobMsg("Job created. Triggering worker...");
       setJob({ id: jobId, status: "queued", progress: 0, error: null, videoUrl: null });
 
-      // 2) try trigger worker (server-side, secret not exposed)
       try {
         await fetch("/api/video-jobs/run-worker", { method: "POST" });
       } catch {}
 
-      // 3) start polling
       await pollJob(jobId);
     } catch (e: any) {
       console.error(e);
@@ -201,13 +196,12 @@ export default function CreateClient() {
     }
   };
 
-  // ✅ Fetch canonical status from /api/presenters/:id/video-status?jobId=...
   const pollJob = async (jobId: string) => {
     if (!presenter?.id) return;
 
     setJobMsg("Processing...");
 
-    const stopAfterMs = 2 * 60 * 1000; // 2 min
+    const stopAfterMs = 2 * 60 * 1000;
     const start = Date.now();
 
     while (true) {
@@ -236,12 +230,10 @@ export default function CreateClient() {
           status: String(j.status ?? "queued"),
           progress: Number(j.progress ?? 0),
           error: j.error ?? null,
-          // ✅ prefer videoUrl (mp4), fallback to video_url if older payload exists
           videoUrl: (j.videoUrl ?? j.video_url ?? null) as string | null,
         });
       }
 
-      // stop conditions
       if (j?.status === "completed") {
         setJobMsg("✅ Video ready.");
         return;
@@ -260,7 +252,6 @@ export default function CreateClient() {
     }
   };
 
-  // UI: Loading
   if (phase === "loading") {
     return (
       <div className="fixed inset-0 bg-black flex flex-col items-center justify-center text-white">
@@ -276,7 +267,6 @@ export default function CreateClient() {
     );
   }
 
-  // UI: Result
   if (phase === "result" && presenter) {
     const pct = job?.progress ?? 0;
 
@@ -311,7 +301,6 @@ export default function CreateClient() {
               </div>
             )}
 
-            {/* Studio */}
             <button
               onClick={() => presenter?.id && router.push(`/studio/${presenter.id}`)}
               className="w-full mt-6 py-4 bg-white text-black rounded-xl font-semibold hover:scale-[1.02] transition"
@@ -321,7 +310,6 @@ export default function CreateClient() {
 
             <div className="h-px bg-neutral-800 my-6" />
 
-            {/* Video job UI */}
             {!!jobMsg && (
               <div className="text-sm text-neutral-200 bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
                 {jobMsg}
@@ -376,7 +364,6 @@ export default function CreateClient() {
     );
   }
 
-  // UI: Control Panel
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
       <div className="w-full max-w-4xl">
@@ -396,6 +383,18 @@ export default function CreateClient() {
         </div>
 
         <div className="grid gap-8">
+          <Selector
+            label="Use Case"
+            options={[
+              "business_spokesperson",
+              "sales_outreach",
+              "founder_ceo",
+              "product_explainer",
+            ]}
+            value={useCase}
+            setValue={setUseCase}
+          />
+
           <Selector label="Gender" options={["male", "female", "any"]} value={gender} setValue={setGender} />
           <Selector label="Age Range" options={["20-30", "30-45", "45-60"]} value={age} setValue={setAge} />
           <Selector
@@ -404,7 +403,12 @@ export default function CreateClient() {
             value={industry}
             setValue={setIndustry}
           />
-          <Selector label="Energy" options={["calm", "executive", "charismatic", "dominant"]} value={energy} setValue={setEnergy} />
+          <Selector
+            label="Energy"
+            options={["calm", "executive", "charismatic", "dominant"]}
+            value={energy}
+            setValue={setEnergy}
+          />
           <Selector
             label="Communication Style"
             options={["authoritative", "friendly", "inspiring", "strategic"]}
