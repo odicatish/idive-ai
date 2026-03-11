@@ -16,6 +16,7 @@ type PresenterDTO = {
   id: string;
   name: string;
   context: Record<string, any>;
+  useCase?: string | null;
 };
 
 type SaveStatus =
@@ -74,6 +75,21 @@ function isTerminalJobStatus(s: string) {
   return v === "completed" || v === "failed";
 }
 
+function getUseCaseLabel(raw?: string | null) {
+  switch (raw) {
+    case "business_spokesperson":
+      return "Business Spokesperson";
+    case "sales_outreach":
+      return "Sales Outreach";
+    case "founder_ceo":
+      return "Founder / CEO Message";
+    case "product_explainer":
+      return "Product Explainer";
+    default:
+      return null;
+  }
+}
+
 export default function ScriptEditor({
   initialScript,
   initialPresenter,
@@ -97,13 +113,11 @@ export default function ScriptEditor({
 
   const dirty = useMemo(() => draft !== script.content, [draft, script.content]);
 
-  // ✅ History drawer state
   const [historyOpen, setHistoryOpen] = useState(false);
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null);
 
-  // ✅ History preview state
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const selected = useMemo(
     () => versions.find((v) => v.id === selectedVersionId) ?? null,
@@ -112,23 +126,21 @@ export default function ScriptEditor({
 
   const [previewMode, setPreviewMode] = useState<"preview" | "diff">("preview");
 
-  // ✅ preview load states
   const [previewText, setPreviewText] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string>("");
 
   const [confirm, setConfirm] = useState<ConfirmState>(null);
 
-  // cache preview content by versionId
   const previewCache = useRef<Map<string, string>>(new Map());
   const previewAbortRef = useRef<AbortController | null>(null);
 
-  // 🔒 IMPORTANT: use presenter.id for ALL API URLs (script.presenterId can become undefined)
   const presenterId = presenter?.id;
+  const presenterUseCaseLabel = useMemo(
+    () => getUseCaseLabel(presenter?.useCase ?? presenter?.context?.useCase ?? null),
+    [presenter]
+  );
 
-  // =========================
-  // ✅ VIDEO POLLING (2s)
-  // =========================
   const POLL_MS = 2000;
   const pollRef = useRef<number | null>(null);
 
@@ -141,28 +153,24 @@ export default function ScriptEditor({
 
   const startVideoPolling = () => {
     if (pollRef.current) return;
-    // run once immediately
     void checkVideoStatus();
     pollRef.current = window.setInterval(() => {
       void checkVideoStatus();
     }, POLL_MS);
   };
 
-  // ✅ Render job UI state
   const [rendering, setRendering] = useState(false);
   const [renderJob, setRenderJob] = useState<VideoJobDTO | null>(null);
 
-  // ✅ helper: kick worker once (best-effort) so user sees progress immediately
   const kickWorkerOnce = async () => {
     try {
-      // allow GET or POST (we made server accept both)
       await fetch(`/api/video-jobs/run-worker`, {
         method: "GET",
         credentials: "include",
         cache: "no-store",
       }).catch(() => {});
     } catch {
-      // ignore — cron will still process later
+      // ignore
     }
   };
 
@@ -183,7 +191,6 @@ export default function ScriptEditor({
 
       const payload = await safeJson(res);
 
-      // if no job yet, stop polling quietly
       if (res.status === 404) {
         return null;
       }
@@ -201,7 +208,9 @@ export default function ScriptEditor({
         progress: Number(job.progress ?? 0),
         provider: job.provider ?? null,
         providerJobId: job.providerJobId ?? job.provider_job_id ?? null,
-        videoUrl: (job.videoUrl ?? job.video_url ?? null) ? String(job.videoUrl ?? job.video_url) : null,
+        videoUrl: (job.videoUrl ?? job.video_url ?? null)
+          ? String(job.videoUrl ?? job.video_url)
+          : null,
         error: job.error ?? null,
         createdAt: job.createdAt ?? job.created_at ?? undefined,
         updatedAt: job.updatedAt ?? job.updated_at ?? undefined,
@@ -209,7 +218,6 @@ export default function ScriptEditor({
 
       setRenderJob(normalized);
 
-      // stop polling on terminal states
       if (isTerminalJobStatus(normalized.status)) {
         stopVideoPolling();
       }
@@ -221,13 +229,11 @@ export default function ScriptEditor({
     }
   };
 
-  // cleanup polling on unmount
   useEffect(() => {
     return () => stopVideoPolling();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // hydrate video banner on load, and start polling only if needed (based on returned status)
   useEffect(() => {
     if (!presenterId) return;
 
@@ -345,14 +351,12 @@ export default function ScriptEditor({
     }
   };
 
-  // ✅ load versions when drawer opens
   useEffect(() => {
     if (!historyOpen) return;
     void loadVersions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyOpen, presenterId]);
 
-  // ✅ ESC closes drawer (and confirm modal)
   useEffect(() => {
     if (!historyOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -365,7 +369,6 @@ export default function ScriptEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [historyOpen]);
 
-  // ✅ offline awareness
   useEffect(() => {
     const onOnline = () => setStatus((s) => (s === "offline" ? (dirty ? "idle" : "saved") : s));
     const onOffline = () => setStatus("offline");
@@ -379,7 +382,6 @@ export default function ScriptEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ local draft fallback (stable key)
   const lsKey = `idive:draft:${presenterId || "unknown"}`;
 
   useEffect(() => {
@@ -482,7 +484,6 @@ export default function ScriptEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draft, script.version, status, presenterId]);
 
-  // ✅ context form state (right inspector)
   const [ctx, setCtx] = useState(() => ({
     location: presenter.context?.location ?? "",
     domain: presenter.context?.domain ?? "",
@@ -538,7 +539,6 @@ export default function ScriptEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
-  // ✅ Generate (AI) — updated to send language:"auto"
   const generateScript = async () => {
     if (status === "offline") return;
     if (!presenterId) return;
@@ -603,71 +603,64 @@ export default function ScriptEditor({
     }
   };
 
-  // ✅ Render Video (queue job + kick worker + start polling)
-  // ✅ Render Video (queue job + kick worker + start polling)
-const renderVideo = async () => {
-  if (status === "offline") return;
-  if (!presenterId) return;
+  const renderVideo = async () => {
+    if (status === "offline") return;
+    if (!presenterId) return;
 
-  setRendering(true);
+    setRendering(true);
 
-  try {
-    const res = await fetch(`/api/presenters/${presenterId}/render`, {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-    });
-
-    const payload = await safeJson(res);
-
-    // if script too short, show a soft message but no hard error state
-    if (res.status === 422) {
-      console.warn("RENDER_WARN_422", payload);
-      alert("Script is too short for rendering a video. Add more text and try again.");
-      return;
-    }
-
-    if (!res.ok) {
-      console.error("RENDER_ERROR", payload);
-      alert(payload?.error ?? "Render failed");
-      return;
-    }
-
-    // API returns { job: {...} } for queueing
-    if (payload?.job) {
-      setRenderJob({
-        id: String(payload.job.id),
-        status: String(payload.job.status ?? "queued"),
-        progress: Number(payload.job.progress ?? 0),
-        createdAt: payload.job.createdAt ?? payload.job.created_at ?? undefined,
+    try {
+      const res = await fetch(`/api/presenters/${presenterId}/render`, {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
       });
-    } else {
-      setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
-    }
 
-    // ✅ Kick worker (fire-and-forget). This does NOT expose the secret.
-    // It runs server-side and processes one queued job.
-    fetch(`/api/video-jobs/run-worker`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-    })
-      .then(async (r) => {
-        const txt = await r.text().catch(() => "");
-        if (!r.ok) console.warn("RUN_WORKER_NOT_OK", r.status, txt);
+      const payload = await safeJson(res);
+
+      if (res.status === 422) {
+        console.warn("RENDER_WARN_422", payload);
+        alert("Script is too short for rendering a video. Add more text and try again.");
+        return;
+      }
+
+      if (!res.ok) {
+        console.error("RENDER_ERROR", payload);
+        alert(payload?.error ?? "Render failed");
+        return;
+      }
+
+      if (payload?.job) {
+        setRenderJob({
+          id: String(payload.job.id),
+          status: String(payload.job.status ?? "queued"),
+          progress: Number(payload.job.progress ?? 0),
+          createdAt: payload.job.createdAt ?? payload.job.created_at ?? undefined,
+        });
+      } else {
+        setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
+      }
+
+      fetch(`/api/video-jobs/run-worker`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
       })
-      .catch((e) => console.warn("RUN_WORKER_THROW", e));
+        .then(async (r) => {
+          const txt = await r.text().catch(() => "");
+          if (!r.ok) console.warn("RUN_WORKER_NOT_OK", r.status, txt);
+        })
+        .catch((e) => console.warn("RUN_WORKER_THROW", e));
 
-    // start polling immediately
-    startVideoPolling();
-  } catch (e) {
-    console.error("RENDER_THROW", e);
-    alert("Render failed (network error).");
-  } finally {
-    setRendering(false);
-  }
-};
-  // ✅ Fetch preview content for selected version
+      startVideoPolling();
+    } catch (e) {
+      console.error("RENDER_THROW", e);
+      alert("Render failed (network error).");
+    } finally {
+      setRendering(false);
+    }
+  };
+
   useEffect(() => {
     if (!historyOpen) return;
     if (!selected) return;
@@ -779,12 +772,19 @@ const renderVideo = async () => {
 
   return (
     <div className="min-h-screen">
-      {/* Top bar */}
       <div className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/70 backdrop-blur-xl">
         <div className="mx-auto max-w-6xl px-5 py-4 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-widest text-white/50">iDive Studio</div>
             <div className="truncate text-lg font-semibold">{presenter.name}</div>
+
+            {presenterUseCaseLabel && (
+              <div className="mt-2">
+                <span className="inline-flex items-center rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-[11px] font-semibold tracking-wide text-sky-200">
+                  {presenterUseCaseLabel}
+                </span>
+              </div>
+            )}
 
             {renderJob && (
               <div className="mt-1 text-xs text-purple-300/80">
@@ -872,9 +872,7 @@ const renderVideo = async () => {
         </div>
       </div>
 
-      {/* Main */}
       <div className="mx-auto max-w-6xl px-5 py-8 grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
-        {/* Editor Card */}
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
           <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
             <div className="text-sm text-white/70">
@@ -942,7 +940,6 @@ const renderVideo = async () => {
           </div>
         </div>
 
-        {/* Inspector */}
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
           <div className="px-5 py-4 border-b border-white/10">
             <div className="text-sm font-semibold">Scene / Context</div>
@@ -1013,7 +1010,6 @@ const renderVideo = async () => {
         </div>
       </div>
 
-      {/* History Drawer */}
       {historyOpen && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setHistoryOpen(false)} />
@@ -1032,7 +1028,8 @@ const renderVideo = async () => {
                   type="button"
                   disabled={status === "offline" || !presenterId}
                 >
-                  Save snapshot                </button>
+                  Save snapshot
+                </button>
 
                 <button
                   onClick={() => setHistoryOpen(false)}
