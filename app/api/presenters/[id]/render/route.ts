@@ -51,6 +51,27 @@ function supabaseAdminSafe() {
   return { ok: true as const, client };
 }
 
+function normalizeVideoDirection(raw: any) {
+  return {
+    shot:
+      typeof raw?.shot === "string" && raw.shot.trim()
+        ? raw.shot.trim()
+        : "medium",
+    delivery:
+      typeof raw?.delivery === "string" && raw.delivery.trim()
+        ? raw.delivery.trim()
+        : "executive",
+    movement:
+      typeof raw?.movement === "string" && raw.movement.trim()
+        ? raw.movement.trim()
+        : "static",
+    background:
+      typeof raw?.background === "string" && raw.background.trim()
+        ? raw.background.trim()
+        : "studio",
+  };
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   return NextResponse.json(
@@ -74,15 +95,26 @@ export async function POST(req: Request, context: any) {
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
-  // verify presenter owner
+  // verify presenter owner + load context/use_case
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
-    .select("id,user_id")
+    .select("id,user_id,context,use_case")
     .eq("id", presenterId)
     .maybeSingle();
 
   if (pErr) return jsonError(500, "presenter_load_failed", pErr.message);
   if (!presenter || presenter.user_id !== auth.user.id) return jsonError(404, "not_found");
+
+  const presenterContext =
+    presenter && typeof presenter.context === "object" && presenter.context
+      ? presenter.context
+      : {};
+
+  const videoDirection = normalizeVideoDirection(presenterContext?.videoDirection);
+  const useCase =
+    typeof (presenter as any)?.use_case === "string" && (presenter as any).use_case.trim()
+      ? String((presenter as any).use_case).trim()
+      : null;
 
   // get current script
   const { data: script, error: sErr } = await supabase
@@ -123,6 +155,10 @@ export async function POST(req: Request, context: any) {
         scriptId: existingJob.script_id,
         scriptVersion: existingJob.script_version,
       },
+      renderConfig: {
+        useCase,
+        videoDirection,
+      },
     });
   }
 
@@ -145,7 +181,6 @@ export async function POST(req: Request, context: any) {
   // 3) create pipeline job + seed steps (SERVICE ROLE)
   const admin = supabaseAdminSafe();
   if (!admin.ok) {
-    // legacy job exists; UI still works, but pipeline won't run
     return NextResponse.json({
       existing: false,
       job: {
@@ -158,13 +193,31 @@ export async function POST(req: Request, context: any) {
       },
       pipelineCreated: false,
       pipelineError: admin.details,
+      renderConfig: {
+        useCase,
+        videoDirection,
+      },
     });
   }
 
   const sb = admin.client;
 
-  // upsert pipeline job linked to legacy job
   const nowIso = new Date().toISOString();
+
+  const renderMeta = {
+    useCase,
+    videoDirection,
+    contextSnapshot: {
+      location: presenterContext?.location ?? "",
+      domain: presenterContext?.domain ?? "",
+      audience: presenterContext?.audience ?? "",
+      tone: presenterContext?.tone ?? "",
+      visual: presenterContext?.visual ?? "",
+      notes: presenterContext?.notes ?? "",
+    },
+    createdFrom: "studio_render",
+  };
+
   const payload = {
     legacy_job_id: job.id,
     presenter_id: job.presenter_id,
@@ -193,6 +246,10 @@ export async function POST(req: Request, context: any) {
       },
       pipelineCreated: false,
       pipelineError: upsertErr.message,
+      renderConfig: {
+        useCase,
+        videoDirection,
+      },
     });
   }
 
@@ -215,7 +272,33 @@ export async function POST(req: Request, context: any) {
       },
       pipelineCreated: false,
       pipelineError: fetchPipeErr?.message ?? "pipeline_job_missing_after_upsert",
+      renderConfig: {
+        useCase,
+        videoDirection,
+      },
     });
+  }
+
+  // best-effort: attach render meta if video_render_jobs.meta exists
+  let metaSaved = false;
+  let metaSaveError: string | null = null;
+
+  try {
+    const { error: metaErr } = await sb
+      .from("video_render_jobs")
+      .update({
+        meta: renderMeta,
+        updated_at: new Date().toISOString(),
+      } as any)
+      .eq("id", pipelineJob.id);
+
+    if (metaErr) {
+      metaSaveError = metaErr.message;
+    } else {
+      metaSaved = true;
+    }
+  } catch (e: any) {
+    metaSaveError = e?.message ?? String(e);
   }
 
   // seed steps (best-effort)
@@ -237,5 +320,13 @@ export async function POST(req: Request, context: any) {
     },
     pipelineCreated: true,
     pipelineJobId: pipelineJob.id,
+    renderConfig: {
+      useCase,
+      videoDirection,
+    },
+    pipelineMeta: {
+      saved: metaSaved,
+      error: metaSaveError,
+    },
   });
 }
