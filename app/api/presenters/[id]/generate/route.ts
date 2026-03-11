@@ -72,6 +72,151 @@ function languageName(tag: string) {
   return map[t] ?? t;
 }
 
+function normalizeText(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function getUseCaseInstruction(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return `
+USE CASE: SALES OUTREACH VIDEO
+
+Goal:
+Create a short persuasive video for prospecting, outreach, or lead generation.
+
+What this should feel like:
+- direct
+- warm
+- credible
+- fast value communication
+
+Recommended structure:
+1. quick hook
+2. identify the pain/problem
+3. clear solution/value
+4. simple CTA
+
+Duration target:
+15–25 seconds spoken.
+`.trim();
+
+    case "founder_ceo":
+      return `
+USE CASE: FOUNDER / CEO MESSAGE
+
+Goal:
+Create a leadership-style message that communicates mission, vision, or strategic direction.
+
+What this should feel like:
+- executive
+- authentic
+- calm authority
+- trust-building
+
+Recommended structure:
+1. founder perspective
+2. what matters now
+3. vision / mission / belief
+4. invitation to move forward
+
+Duration target:
+20–35 seconds spoken.
+`.trim();
+
+    case "product_explainer":
+      return `
+USE CASE: PRODUCT EXPLAINER
+
+Goal:
+Explain clearly what the product does and why it matters.
+
+What this should feel like:
+- clear
+- simple
+- structured
+- easy to follow
+
+Recommended structure:
+1. hook
+2. problem
+3. how it works
+4. outcome / benefit
+5. CTA when appropriate
+
+Duration target:
+25–40 seconds spoken.
+`.trim();
+
+    case "business_spokesperson":
+    default:
+      return `
+USE CASE: BUSINESS SPOKESPERSON
+
+Goal:
+Represent the company in a polished, premium, professional way.
+
+What this should feel like:
+- trustworthy
+- polished
+- premium
+- brand-safe
+
+Recommended structure:
+1. strong hook
+2. what the company does
+3. why it matters
+4. CTA
+
+Duration target:
+20–30 seconds spoken.
+`.trim();
+  }
+}
+
+function getVoiceStyle(useCase: string, context: Record<string, any>) {
+  const explicit = normalizeText(context?.voiceStyle);
+  if (explicit) return explicit;
+
+  switch (useCase) {
+    case "sales_outreach":
+      return "energetic";
+    case "founder_ceo":
+      return "authoritative";
+    case "product_explainer":
+      return "clear";
+    case "business_spokesperson":
+    default:
+      return "premium";
+  }
+}
+
+function buildVideoDirection(context: Record<string, any>) {
+  const vd =
+    context?.videoDirection && typeof context.videoDirection === "object"
+      ? context.videoDirection
+      : {};
+
+  const shot = normalizeText(vd?.shot || context?.shot);
+  const delivery = normalizeText(vd?.delivery || context?.delivery);
+  const movement = normalizeText(vd?.movement || context?.movement);
+  const background = normalizeText(vd?.background || context?.background);
+  const currentDirection = normalizeText(vd?.currentDirection || context?.currentDirection);
+
+  const parts = [
+    shot ? `- Shot: ${shot}` : "",
+    delivery ? `- Delivery: ${delivery}` : "",
+    movement ? `- Movement: ${movement}` : "",
+    background ? `- Background: ${background}` : "",
+    currentDirection ? `- Current direction: ${currentDirection}` : "",
+  ].filter(Boolean);
+
+  return {
+    hasAny: parts.length > 0,
+    text: parts.join("\n"),
+  };
+}
+
 async function detectLanguageTag(openai: OpenAI, text: string) {
   const sample = (text ?? "").trim();
   if (!sample) return "en";
@@ -172,7 +317,7 @@ export async function POST(req: Request, context: any) {
 
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
-    .select("id,user_id,context,name")
+    .select("id,user_id,name,context,use_case")
     .eq("id", presenterId)
     .maybeSingle();
 
@@ -181,7 +326,7 @@ export async function POST(req: Request, context: any) {
 
   const { data: script, error: sErr } = await supabase
     .from("presenter_scripts")
-    .select("id,presenter_id,content,version,language,updated_at")
+    .select("id,presenter_id,content,version,language,updated_at,tone")
     .eq("presenter_id", presenterId)
     .maybeSingle();
 
@@ -190,14 +335,27 @@ export async function POST(req: Request, context: any) {
 
   const presenterCtx =
     presenter?.context && typeof presenter.context === "object" ? presenter.context : {};
-  const merged = { ...presenterCtx, ...uiContext };
 
-  const tone = String(merged?.tone ?? "premium");
-  const visual = String(merged?.visual ?? "apple-cinematic");
-  const location = String(merged?.location ?? "");
-  const domain = String(merged?.domain ?? "");
-  const audience = String(merged?.audience ?? "");
-  const notes = String(merged?.notes ?? "");
+  const scriptTone =
+    script?.tone && typeof script.tone === "object" ? (script.tone as Record<string, any>) : {};
+
+  const merged = {
+    ...scriptTone,
+    ...presenterCtx,
+    ...uiContext,
+  };
+
+  const useCase = normalizeText((presenter as any)?.use_case) || normalizeText(merged?.useCase) || "business_spokesperson";
+  const voiceStyle = getVoiceStyle(useCase, merged);
+
+  const tone = normalizeText(merged?.tone) || "premium";
+  const visual = normalizeText(merged?.visual) || "apple-cinematic";
+  const location = normalizeText(merged?.location);
+  const domain = normalizeText(merged?.domain);
+  const audience = normalizeText(merged?.audience);
+  const notes = normalizeText(merged?.notes);
+
+  const videoDirection = buildVideoDirection(merged);
 
   const draftForAI = incomingContent.trim().length ? incomingContent : String(script.content ?? "");
   const openai = openaiServer as unknown as OpenAI;
@@ -206,7 +364,19 @@ export async function POST(req: Request, context: any) {
   if (requestedLanguage !== "auto") {
     languageTag = requestedLanguage || "en";
   } else {
-    const detectText = `${draftForAI}\n\n${notes}\n\n${audience}\n\n${domain}`.trim();
+    const detectText = [
+      draftForAI,
+      notes,
+      audience,
+      domain,
+      useCase,
+      voiceStyle,
+      videoDirection.text,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
     try {
       languageTag = await detectLanguageTag(openai, detectText);
     } catch (e) {
@@ -238,36 +408,69 @@ export async function POST(req: Request, context: any) {
   } as const;
 
   const system =
-    "You are a senior copywriter and voiceover director. " +
-    "Write natural, clear, premium, cinematic spoken marketing copy without clichés. " +
+    "You are a senior copywriter, creative director, and voiceover director for AI video presenters. " +
+    "Write natural, premium, spoken marketing copy that feels believable on camera. " +
+    "Avoid clichés, robotic patterns, filler, and generic ad language. " +
     "Return ONLY valid JSON per the schema.";
 
   const user = `
 Return ONLY valid JSON matching the provided schema.
 
-You are writing a spoken script for a video presenter (avatar).
-Make it sound natural, confident, and premium — not like a generic ad.
+You are rewriting or generating spoken video script copy for an AI presenter.
 
 Hard rules:
 - Output language MUST be: ${targetLanguageName} (tag: ${languageTag})
-- If the current draft is in a language, match that language.
-- Length: 80–160 words (roughly 20–30 seconds spoken)
-- No bullet points, no headings, no emojis, no weird symbols (like "/" or "*")
+- If the current draft already has a clear language, preserve that language unless explicitly overridden
+- Length: 80–160 words unless the use case naturally needs slightly shorter copy
+- No bullet points
+- No headings
+- No emojis
+- No weird symbols
 - Hook: max 2 sentences
 - CTA: exactly 1 sentence
-- Body: short spoken sentences, 1–3 lines per paragraph
-- Avoid clichés and filler
+- Body: short spoken sentences, easy to say out loud
+- Avoid clichés, filler, and fake hype
+- Make it sound spoken on camera, not written for a brochure
 
-Context:
-- Location: ${location}
-- Industry/Domain: ${domain}
-- Audience: ${audience}
+Presenter / brand context:
+- Presenter name: ${normalizeText((presenter as any)?.name) || "not specified"}
+- Use case: ${useCase}
+- Voice delivery style: ${voiceStyle}
 - Tone: ${tone}
 - Visual vibe: ${visual}
-- Notes: ${notes}
+- Location: ${location || "not specified"}
+- Industry/Domain: ${domain || "not specified"}
+- Audience: ${audience || "not specified"}
+- Notes: ${notes || "none"}
+
+Use case direction:
+${getUseCaseInstruction(useCase)}
+
+Voice style rules:
+- premium = polished, calm, elegant
+- energetic = sharper, faster, more direct
+- authoritative = composed, executive, confident
+- clear = simple, structured, easy to follow
+
+${
+  videoDirection.hasAny
+    ? `Video direction:
+${videoDirection.text}
+
+Interpret video direction as on-camera delivery guidance.
+It should influence pacing, presence, and wording subtly.
+`
+    : ""
+}
 
 Current draft:
 ${draftForAI}
+
+Output requirements:
+- hook should feel strong and spoken
+- body should be natural and camera-friendly
+- cta should feel appropriate for the use case
+- finalText must read like one clean final script ready for voiceover
 `.trim();
 
   let jsonText = "";
@@ -281,7 +484,7 @@ ${draftForAI}
       text: {
         format: {
           type: "json_schema",
-          name: "ai_script_anylang_v2",
+          name: "ai_script_anylang_v3",
           strict: true,
           schema,
         },
@@ -318,7 +521,6 @@ ${draftForAI}
   const now = new Date().toISOString();
   const reason = "generate";
 
-  // ✅ PRE snapshot (no duplicate crashes)
   const { error: preErr } = await supabase
     .from("presenter_script_versions")
     .upsert(
@@ -326,7 +528,12 @@ ${draftForAI}
         script_id: script.id,
         version: prevVersion,
         source: "snapshot",
-        meta: { reason, phase: "pre" },
+        meta: {
+          reason,
+          phase: "pre",
+          useCase,
+          voiceStyle,
+        },
         content: String(script.content ?? ""),
         created_by: auth.user.id,
       },
@@ -334,6 +541,24 @@ ${draftForAI}
     );
 
   if (preErr) return jsonError(500, "version_presnapshot_failed", preErr.message);
+
+  const nextTone = {
+    ...(scriptTone ?? {}),
+    useCase,
+    voiceStyle,
+    industry: domain || scriptTone?.industry || null,
+    tone: tone || scriptTone?.tone || null,
+    visual: visual || scriptTone?.visual || null,
+    audience: audience || scriptTone?.audience || null,
+    location: location || scriptTone?.location || null,
+    videoDirection: videoDirection.hasAny ? {
+      shot: normalizeText(merged?.videoDirection?.shot || merged?.shot),
+      delivery: normalizeText(merged?.videoDirection?.delivery || merged?.delivery),
+      movement: normalizeText(merged?.videoDirection?.movement || merged?.movement),
+      background: normalizeText(merged?.videoDirection?.background || merged?.background),
+      currentDirection: normalizeText(merged?.videoDirection?.currentDirection || merged?.currentDirection),
+    } : scriptTone?.videoDirection ?? null,
+  };
 
   const { error: upErr } = await supabase
     .from("presenter_scripts")
@@ -343,12 +568,12 @@ ${draftForAI}
       updated_at: now,
       updated_by: auth.user.id,
       language: languageTag,
+      tone: nextTone,
     } as any)
     .eq("id", script.id);
 
   if (upErr) return jsonError(500, "script_update_failed", upErr.message);
 
-  // ✅ POST snapshot (no duplicate crashes)
   const { error: postErr } = await supabase
     .from("presenter_script_versions")
     .upsert(
@@ -359,6 +584,8 @@ ${draftForAI}
         meta: {
           reason,
           phase: "post",
+          useCase,
+          voiceStyle,
           ai: {
             language: String(ai?.language ?? languageTag),
             sections: ai?.sections ?? null,
