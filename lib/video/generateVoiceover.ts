@@ -42,6 +42,13 @@ function normalizeText(v: any, max = 500) {
   return v.trim().slice(0, max);
 }
 
+function normalizeGender(v: any): "male" | "female" | "unknown" {
+  const s = String(v || "").trim().toLowerCase();
+  if (s === "male" || s === "man" || s === "m") return "male";
+  if (s === "female" || s === "woman" || s === "f") return "female";
+  return "unknown";
+}
+
 /**
  * Heuristic language detect (lightweight).
  */
@@ -203,7 +210,6 @@ function shapeCadenceForTts(
 
   t = t.replace(/\s+/g, " ").trim();
 
-  // normalize punctuation for more stable cadence
   t = t
     .replace(/\s*,\s*/g, ", ")
     .replace(/\s*;\s*/g, ". ")
@@ -217,7 +223,6 @@ function shapeCadenceForTts(
   const delivery = opts.delivery.toLowerCase();
   const voiceStyle = opts.voiceStyle.toLowerCase();
 
-  // For calmer / more executive reads, create more intentional pauses.
   if (
     delivery === "calm" ||
     delivery === "executive" ||
@@ -229,23 +234,14 @@ function shapeCadenceForTts(
       .replace(/,\s+(and|but|while|yet)\s+/gi, ". $1 ");
   }
 
-  // For clarity, simplify cadence a bit.
   if (delivery === "clear" || voiceStyle === "clear") {
-    t = t
-      .replace(/,\s+/g, ". ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+    t = t.replace(/,\s+/g, ". ").replace(/\s{2,}/g, " ").trim();
   }
 
-  // For energetic, keep it tight and more punchy.
   if (delivery === "energetic" || voiceStyle === "energetic") {
-    t = t
-      .replace(/,\s+/g, ", ")
-      .replace(/\. ([A-ZĂÂÎȘȚ])/g, ". $1")
-      .trim();
+    t = t.replace(/,\s+/g, ", ").replace(/\. ([A-ZĂÂÎȘȚ])/g, ". $1").trim();
   }
 
-  // mild paragraph pauses every ~2 sentences for premium reads
   if (
     delivery === "calm" ||
     delivery === "executive" ||
@@ -267,18 +263,68 @@ function shapeCadenceForTts(
   return t.trim();
 }
 
-function pickVoice(lang: string, delivery: string, voiceStyle: string): string {
+function pickVoiceByGenderAndStyle(opts: {
+  lang: string;
+  gender: "male" | "female" | "unknown";
+  delivery: string;
+  voiceStyle: string;
+}) {
   const override = (process.env.VOICEOVER_VOICE || "").trim();
   if (override) return override;
 
-  const d = delivery.toLowerCase();
-  const v = voiceStyle.toLowerCase();
+  const lang = opts.lang.toLowerCase();
+  const gender = opts.gender;
+  const d = opts.delivery.toLowerCase();
+  const v = opts.voiceStyle.toLowerCase();
 
+  // female leaning
+  if (gender === "female") {
+    if (lang === "ro") {
+      if (d === "energetic" || v === "energetic") return "shimmer";
+      if (d === "clear" || v === "clear") return "marin";
+      if (d === "executive" || v === "authoritative") return "alloy";
+      return "alloy";
+    }
+
+    if (lang === "en") {
+      if (d === "energetic" || v === "energetic") return "shimmer";
+      if (d === "clear" || v === "clear") return "alloy";
+      if (d === "executive" || v === "authoritative") return "alloy";
+      return "alloy";
+    }
+
+    if (d === "energetic" || v === "energetic") return "shimmer";
+    if (d === "clear" || v === "clear") return "alloy";
+    return "alloy";
+  }
+
+  // male leaning
+  if (gender === "male") {
+    if (lang === "ro") {
+      if (d === "energetic" || v === "energetic") return "verse";
+      if (d === "clear" || v === "clear") return "marin";
+      if (d === "executive" || v === "authoritative") return "cedar";
+      return "cedar";
+    }
+
+    if (lang === "en") {
+      if (d === "energetic" || v === "energetic") return "verse";
+      if (d === "clear" || v === "clear") return "marin";
+      if (d === "executive" || v === "authoritative") return "cedar";
+      return "marin";
+    }
+
+    if (d === "energetic" || v === "energetic") return "verse";
+    if (d === "clear" || v === "clear") return "marin";
+    return "cedar";
+  }
+
+  // unknown fallback
   if (lang === "ro") {
     if (d === "energetic" || v === "energetic") return "verse";
     if (d === "clear" || v === "clear") return "marin";
     if (d === "executive" || v === "authoritative") return "cedar";
-    return "cedar";
+    return "marin";
   }
 
   if (lang === "en") {
@@ -305,7 +351,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const usedUrl = getSupabaseUrl();
   const projectRef = getProjectRefFromUrl(usedUrl);
 
-  // 1) get job
   const { data: jobRaw, error: jobErr } = await supabase
     .from("video_render_jobs")
     .select("*")
@@ -322,7 +367,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const presenterId = String(job.presenter_id || "");
   if (!presenterId) throw new Error("Job missing presenter_id");
 
-  // 2) get script
   const { data: scriptRaw, error: scriptErr } = await supabase
     .from("presenter_scripts")
     .select("content, language, tone")
@@ -333,10 +377,9 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const script = scriptRaw as AnyRow | null;
   if (!script) throw new Error("Script not found");
 
-  // 3) get presenter context / use case
   const { data: presenterRaw, error: presenterErr } = await supabase
     .from("presenters")
-    .select("id,name,context,use_case")
+    .select("id,name,gender,context,use_case")
     .eq("id", presenterId)
     .maybeSingle();
 
@@ -354,10 +397,17 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
       ? (presenter.context as AnyRow)
       : {};
 
+  const presenterGender = normalizeGender(presenter?.gender);
   const useCase = getUseCaseFromData(presenter, tone);
   const voiceStyle = getVoiceStyleFromData(presenterContext, tone, useCase);
   const delivery = getDeliveryFromData(presenterContext, tone, voiceStyle);
-  const voice = pickVoice(lang, delivery, voiceStyle);
+
+  const voice = pickVoiceByGenderAndStyle({
+    lang,
+    gender: presenterGender,
+    delivery,
+    voiceStyle,
+  });
 
   const cleanedText = stripMetaAndNormalizeForTts(rawText);
   if (!cleanedText) {
@@ -375,7 +425,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
     throw new Error("After cadence shaping, script became empty.");
   }
 
-  // 4) mark step processing
   const now = new Date().toISOString();
   const { error: stepStartErr } = await supabase
     .from("video_render_steps")
@@ -391,7 +440,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   if (stepStartErr) throw new Error(`voiceover_step_update_failed: ${stepStartErr.message}`);
 
-  // 5) generate TTS
   const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
   const speech = await openai.audio.speech.create({
@@ -403,7 +451,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
   const buffer = Buffer.from(await speech.arrayBuffer());
   if (!buffer?.length) throw new Error("TTS returned empty audio buffer.");
 
-  // 6) upload to storage
   const bucket = "renders";
   const path = `voiceovers/${jobId}.mp3`;
 
@@ -415,7 +462,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   if (uploadError) throw new Error(`storage_upload_failed: ${uploadError.message}`);
 
-  // 7) signed url
   const { data: signed, error: signedErr } = await supabase.storage
     .from(bucket)
     .createSignedUrl(path, 60 * 60 * 24 * 7);
@@ -424,7 +470,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   const signedUrl = signed?.signedUrl ?? null;
 
-  // 8) create asset
   const { error: assetErr } = await supabase.from("video_assets").insert(
     {
       job_id: jobId,
@@ -439,6 +484,7 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
         usedUrl,
         lang,
         voice,
+        gender: presenterGender,
         voiceStyle,
         delivery,
         useCase,
@@ -450,7 +496,6 @@ export async function generateVoiceoverForJob(jobId: string): Promise<string | n
 
   if (assetErr) throw new Error(`asset_insert_failed: ${assetErr.message}`);
 
-  // 9) complete step
   const doneAt = new Date().toISOString();
   const { error: stepDoneErr } = await supabase
     .from("video_render_steps")
