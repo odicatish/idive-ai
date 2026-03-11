@@ -26,6 +26,29 @@ type VideoJob = {
   videoUrl: string | null;
 };
 
+const USE_CASES = [
+  {
+    id: "business_spokesperson",
+    label: "Business Spokesperson",
+    desc: "Professional company representative for landing pages or websites.",
+  },
+  {
+    id: "sales_outreach",
+    label: "Sales Outreach",
+    desc: "Short personalized video for prospecting and lead generation.",
+  },
+  {
+    id: "founder_ceo",
+    label: "Founder / CEO Message",
+    desc: "Leadership style message communicating mission and vision.",
+  },
+  {
+    id: "product_explainer",
+    label: "Product Explainer",
+    desc: "Clear explanation of how a product or feature works.",
+  },
+];
+
 export default function CreateClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -36,10 +59,8 @@ export default function CreateClient() {
 
   const [prompt, setPrompt] = useState("");
 
-  // ✅ use case mode
   const [useCase, setUseCase] = useState("business_spokesperson");
 
-  // video job state
   const [job, setJob] = useState<VideoJob | null>(null);
   const [jobMsg, setJobMsg] = useState<string | null>(null);
   const [jobBusy, setJobBusy] = useState(false);
@@ -60,6 +81,7 @@ export default function CreateClient() {
     ],
     []
   );
+
   const [stepIndex, setStepIndex] = useState(0);
 
   const redirectToLogin = () => {
@@ -80,40 +102,6 @@ export default function CreateClient() {
     const i = setInterval(() => setStepIndex((p) => (p + 1) % steps.length), 900);
     return () => clearInterval(i);
   }, [phase, steps]);
-
-  useEffect(() => {
-    const checkout = searchParams.get("checkout");
-    if (checkout !== "success") return;
-
-    let alive = true;
-
-    (async () => {
-      try {
-        for (let i = 0; i < 10; i++) {
-          const res = await fetch("/api/stripe/status", { method: "GET" });
-
-          if (res.status === 401) {
-            redirectToLogin();
-            return;
-          }
-
-          const status = await res.json();
-          if (status?.pro) break;
-
-          await new Promise((r) => setTimeout(r, 1500));
-          if (!alive) return;
-        }
-      } catch {
-        // ignore
-      } finally {
-        router.replace("/create");
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [searchParams, router]);
 
   const postJSON = async (url: string, body?: any) => {
     const res = await fetch(url, {
@@ -140,6 +128,7 @@ export default function CreateClient() {
     setJobMsg(null);
 
     setPhase("loading");
+
     try {
       const data = await postJSON("/api/generate-script", {
         gender,
@@ -164,7 +153,7 @@ export default function CreateClient() {
 
   const createVideoJob = async () => {
     if (!presenter?.id) {
-      alert("Missing presenter id. Generate first.");
+      alert("Missing presenter id.");
       return;
     }
 
@@ -174,23 +163,16 @@ export default function CreateClient() {
 
     try {
       const r = await postJSON("/api/video-jobs/create", { presenterId: presenter.id });
-      if (!r) return;
 
-      const jobId = r?.job?.id as string | undefined;
-      if (!jobId) throw new Error("Missing job.id from /api/video-jobs/create");
+      const jobId = r?.job?.id;
 
-      setJobMsg("Job created. Triggering worker...");
       setJob({ id: jobId, status: "queued", progress: 0, error: null, videoUrl: null });
 
-      try {
-        await fetch("/api/video-jobs/run-worker", { method: "POST" });
-      } catch {}
+      await fetch("/api/video-jobs/run-worker", { method: "POST" });
 
       await pollJob(jobId);
     } catch (e: any) {
-      console.error(e);
-      setJobMsg(null);
-      alert(e?.message ?? "Failed to create job.");
+      alert(e?.message ?? "Failed.");
     } finally {
       setJobBusy(false);
     }
@@ -199,52 +181,28 @@ export default function CreateClient() {
   const pollJob = async (jobId: string) => {
     if (!presenter?.id) return;
 
-    setJobMsg("Processing...");
-
-    const stopAfterMs = 2 * 60 * 1000;
-    const start = Date.now();
-
     while (true) {
       const res = await fetch(
-        `/api/presenters/${encodeURIComponent(presenter.id)}/video-status?jobId=${encodeURIComponent(jobId)}`,
-        { method: "GET", credentials: "include", cache: "no-store" }
+        `/api/presenters/${presenter.id}/video-status?jobId=${jobId}`,
+        { cache: "no-store" }
       );
 
-      if (res.status === 401) {
-        redirectToLogin();
-        return;
-      }
+      const json = await res.json();
 
-      const json = await res.json().catch(() => null);
+      const j = json?.job;
 
-      if (!res.ok) {
-        const msg = json?.error ? String(json.error) : `Status ${res.status}`;
-        setJobMsg(`Error: ${msg}`);
-        return;
-      }
-
-      const j: any = json?.job ?? null;
       if (j) {
         setJob({
-          id: String(j.id ?? jobId),
-          status: String(j.status ?? "queued"),
-          progress: Number(j.progress ?? 0),
-          error: j.error ?? null,
-          videoUrl: (j.videoUrl ?? j.video_url ?? null) as string | null,
+          id: j.id,
+          status: j.status,
+          progress: j.progress,
+          error: j.error,
+          videoUrl: j.videoUrl ?? null,
         });
       }
 
       if (j?.status === "completed") {
-        setJobMsg("✅ Video ready.");
-        return;
-      }
-      if (j?.status === "failed" || j?.error) {
-        setJobMsg(`❌ Failed: ${j?.error ?? "unknown"}`);
-        return;
-      }
-
-      if (Date.now() - start > stopAfterMs) {
-        setJobMsg("Still processing. Leave this tab open or refresh later.");
+        setJobMsg("Video ready");
         return;
       }
 
@@ -257,106 +215,34 @@ export default function CreateClient() {
       <div className="fixed inset-0 bg-black flex flex-col items-center justify-center text-white">
         <div className="w-20 h-20 border-2 border-white/20 border-t-white rounded-full animate-spin mb-8" />
         <p className="text-xl text-white/90">{steps[stepIndex]}</p>
-        <button
-          onClick={() => setPhase("idle")}
-          className="mt-6 text-sm text-white/40 hover:text-white/70 underline"
-        >
-          Back
-        </button>
       </div>
     );
   }
 
   if (phase === "result" && presenter) {
-    const pct = job?.progress ?? 0;
-
     return (
       <div className="min-h-screen bg-black flex items-center justify-center px-6 text-white">
         <div className="bg-neutral-900 rounded-3xl overflow-hidden shadow-2xl max-w-md w-full border border-neutral-800">
           {presenter.image && (
-            <img
-              src={presenter.image}
-              className="w-full aspect-[3/4] object-cover"
-              alt="Presenter"
-              onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
-            />
+            <img src={presenter.image} className="w-full aspect-[3/4] object-cover" />
           )}
 
           <div className="p-8 text-center">
             <h2 className="text-3xl font-bold">{presenter.name}</h2>
             <p className="text-neutral-400">{presenter.title}</p>
 
-            {presenter.bio && (
-              <p className="text-sm text-neutral-300 mt-4 leading-relaxed">{presenter.bio}</p>
-            )}
-
-            {presenter.script && (
-              <div className="mt-5 text-left bg-black/30 border border-neutral-800 rounded-2xl p-4">
-                <p className="text-xs uppercase tracking-wider text-neutral-400 mb-2">
-                  Script (preview)
-                </p>
-                <p className="text-sm text-neutral-200 whitespace-pre-wrap leading-relaxed">
-                  {presenter.script}
-                </p>
-              </div>
-            )}
-
             <button
               onClick={() => presenter?.id && router.push(`/studio/${presenter.id}`)}
-              className="w-full mt-6 py-4 bg-white text-black rounded-xl font-semibold hover:scale-[1.02] transition"
+              className="w-full mt-6 py-4 bg-white text-black rounded-xl font-semibold"
             >
               Enter Studio
             </button>
 
-            <div className="h-px bg-neutral-800 my-6" />
-
-            {!!jobMsg && (
-              <div className="text-sm text-neutral-200 bg-black/30 border border-neutral-800 rounded-2xl p-4 mb-4">
-                {jobMsg}
-              </div>
-            )}
-
-            {job && (
-              <div className="mb-4 text-left bg-black/30 border border-neutral-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between text-xs text-neutral-400">
-                  <span>Status: {job.status}</span>
-                  <span>{pct}%</span>
-                </div>
-                <div className="mt-2 h-2 w-full bg-neutral-800 rounded-full overflow-hidden">
-                  <div className="h-2 bg-white" style={{ width: `${pct}%` }} />
-                </div>
-
-                {job.videoUrl && (
-                  <a
-                    href={job.videoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 inline-block text-sm underline text-white/90 hover:text-white"
-                  >
-                    Open video
-                  </a>
-                )}
-              </div>
-            )}
-
             <button
               onClick={createVideoJob}
-              disabled={jobBusy}
-              className="w-full py-4 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition disabled:opacity-60"
+              className="w-full mt-4 py-4 bg-neutral-800 rounded-xl font-semibold"
             >
-              {jobBusy ? "Working..." : "🎬 Generate Video"}
-            </button>
-
-            <button
-              onClick={() => {
-                setPhase("idle");
-                setPresenter(null);
-                setJob(null);
-                setJobMsg(null);
-              }}
-              className="mt-4 w-full py-3 bg-neutral-800 rounded-xl font-semibold hover:bg-neutral-700 transition"
-            >
-              Generate Another
+              Generate Video
             </button>
           </div>
         </div>
@@ -367,96 +253,48 @@ export default function CreateClient() {
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-6">
       <div className="w-full max-w-4xl">
-        <h1 className="text-5xl font-bold text-center mb-12">Identity Control Panel</h1>
 
-        <div className="mb-10">
-          <p className="text-neutral-400 mb-3">Tema / detalii pentru script (opțional)</p>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder='Ex: "Pitch de 30s pentru un SaaS, ton premium, call-to-action"'
-            className="w-full min-h-[110px] px-4 py-3 rounded-2xl bg-black/30 border border-neutral-700 outline-none focus:border-neutral-400 text-white"
-          />
-          <p className="text-xs text-neutral-500 mt-2">
-            Dacă lași gol, AI-ul generează generic pe industria selectată.
-          </p>
+        <h1 className="text-5xl font-bold text-center mb-12">
+          Identity Control Panel
+        </h1>
+
+        {/* USE CASE */}
+        <div className="mb-12">
+          <p className="text-neutral-400 mb-4">Video Type</p>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            {USE_CASES.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setUseCase(c.id)}
+                className={`text-left border rounded-xl p-4 transition ${
+                  useCase === c.id
+                    ? "border-white bg-white text-black"
+                    : "border-neutral-700 hover:border-neutral-400"
+                }`}
+              >
+                <div className="font-semibold">{c.label}</div>
+                <div className="text-sm opacity-70 mt-1">{c.desc}</div>
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="grid gap-8">
-          <Selector
-            label="Use Case"
-            options={[
-              "business_spokesperson",
-              "sales_outreach",
-              "founder_ceo",
-              "product_explainer",
-            ]}
-            value={useCase}
-            setValue={setUseCase}
-          />
-
-          <Selector label="Gender" options={["male", "female", "any"]} value={gender} setValue={setGender} />
-          <Selector label="Age Range" options={["20-30", "30-45", "45-60"]} value={age} setValue={setAge} />
-          <Selector
-            label="Industry"
-            options={["business", "technology", "fitness", "finance", "education"]}
-            value={industry}
-            setValue={setIndustry}
-          />
-          <Selector
-            label="Energy"
-            options={["calm", "executive", "charismatic", "dominant"]}
-            value={energy}
-            setValue={setEnergy}
-          />
-          <Selector
-            label="Communication Style"
-            options={["authoritative", "friendly", "inspiring", "strategic"]}
-            value={style}
-            setValue={setStyle}
-          />
-        </div>
+        {/* PROMPT */}
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe the video..."
+          className="w-full min-h-[120px] bg-black border border-neutral-700 rounded-xl p-4"
+        />
 
         <button
           onClick={generateHuman}
-          className="mt-12 w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold hover:scale-105 transition"
+          className="mt-8 w-full py-5 bg-white text-black rounded-2xl text-lg font-semibold"
         >
           Generate Synthetic Human
         </button>
       </div>
     </main>
-  );
-}
-
-function Selector({
-  label,
-  options,
-  value,
-  setValue,
-}: {
-  label: string;
-  options: string[];
-  value: string;
-  setValue: (v: string) => void;
-}) {
-  return (
-    <div>
-      <p className="text-neutral-400 mb-3">{label}</p>
-      <div className="flex gap-3 flex-wrap">
-        {options.map((option) => (
-          <button
-            key={option}
-            onClick={() => setValue(option)}
-            className={`px-4 py-2 rounded-full border transition ${
-              value === option
-                ? "bg-white text-black border-white"
-                : "border-neutral-700 hover:border-neutral-400"
-            }`}
-          >
-            {option}
-          </button>
-        ))}
-      </div>
-    </div>
   );
 }
