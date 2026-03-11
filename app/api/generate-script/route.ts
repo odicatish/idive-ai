@@ -84,6 +84,116 @@ async function getUserIdFromSession(): Promise<string | null> {
   }
 }
 
+function getUseCaseInstruction(useCase: string) {
+  switch (useCase) {
+    case "sales_outreach":
+      return `
+USE CASE: SALES OUTREACH VIDEO
+
+Goal:
+Create a short persuasive video for prospecting, outreach, or lead generation.
+
+What this should feel like:
+- direct
+- warm
+- credible
+- clear value fast
+
+Recommended structure:
+1. fast hook
+2. identify a real problem
+3. short value proposition
+4. invitation to talk / book demo / learn more
+
+Duration target:
+15–25 seconds spoken.
+
+CTA style:
+light, direct, action-oriented.
+`.trim();
+
+    case "founder_ceo":
+      return `
+USE CASE: FOUNDER / CEO MESSAGE
+
+Goal:
+Create a leadership-style message that communicates mission, vision, or strategic direction.
+
+What this should feel like:
+- executive
+- authentic
+- calm authority
+- high trust
+
+Recommended structure:
+1. founder perspective
+2. what matters now
+3. mission / direction
+4. invitation to believe, join, or move forward
+
+Duration target:
+20–35 seconds spoken.
+
+Tone:
+human, confident, visionary, not corporate fluff.
+`.trim();
+
+    case "product_explainer":
+      return `
+USE CASE: PRODUCT EXPLAINER
+
+Goal:
+Explain clearly what the product does and why it matters.
+
+What this should feel like:
+- simple
+- sharp
+- easy to follow
+- benefit-first
+
+Recommended structure:
+1. hook
+2. problem
+3. how it works
+4. result / benefit
+5. CTA
+
+Duration target:
+25–40 seconds spoken.
+
+Tone:
+clear and instructive, not overly salesy.
+`.trim();
+
+    case "business_spokesperson":
+    default:
+      return `
+USE CASE: BUSINESS SPOKESPERSON
+
+Goal:
+Represent the company in a polished, premium, professional way.
+
+What this should feel like:
+- trustworthy
+- polished
+- modern
+- premium brand voice
+
+Recommended structure:
+1. strong hook
+2. what the company does
+3. why it matters
+4. CTA
+
+Duration target:
+20–30 seconds spoken.
+
+Tone:
+brand-safe, confident, concise.
+`.trim();
+  }
+}
+
 export async function POST(req: Request) {
   try {
     let body: any = {};
@@ -96,10 +206,15 @@ export async function POST(req: Request) {
     const userId = await getUserIdFromSession();
     if (!userId) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-    const useCase = body.useCase || "business_spokesperson";
+    const useCase =
+      typeof body.useCase === "string" && body.useCase.trim()
+        ? body.useCase.trim()
+        : "business_spokesperson";
 
     const userPrompt =
-      typeof body.prompt === "string" && body.prompt.trim().length > 0 ? body.prompt.trim() : null;
+      typeof body.prompt === "string" && body.prompt.trim().length > 0
+        ? body.prompt.trim()
+        : null;
 
     const ctxIn = body?.context && typeof body.context === "object" ? body.context : {};
 
@@ -112,111 +227,93 @@ export async function POST(req: Request) {
       notes: normalizeStr(ctxIn.notes, 400),
     };
 
-    const genderIn = body.gender || "any";
-    const age = body.age || "30-45";
-    const industry = body.industry || "business";
-    const energy = body.energy || "executive";
-    const style = body.style || "authoritative";
+    const genderIn =
+      typeof body.gender === "string" && body.gender.trim()
+        ? body.gender.trim()
+        : "any";
+
+    const age =
+      typeof body.age === "string" && body.age.trim()
+        ? body.age.trim()
+        : "30-45";
+
+    const industry =
+      typeof body.industry === "string" && body.industry.trim()
+        ? body.industry.trim()
+        : "business";
+
+    const energy =
+      typeof body.energy === "string" && body.energy.trim()
+        ? body.energy.trim()
+        : "executive";
+
+    const style =
+      typeof body.style === "string" && body.style.trim()
+        ? body.style.trim()
+        : "authoritative";
 
     const genderRule =
       genderIn === "any"
         ? `Choose ONE gender: "male" or "female" and set it in the JSON field "gender".`
         : `Gender MUST be "${genderIn}".`;
 
-    // 🔹 use case script behavior
-    let useCaseInstruction = "";
+    const useCaseInstruction = getUseCaseInstruction(useCase);
 
-    if (useCase === "sales_outreach") {
-      useCaseInstruction = `
-USE CASE: SALES OUTREACH VIDEO
+    const contextBlock = `
+SCENE / BRAND CONTEXT:
+- Location: ${context.location || "not specified"}
+- Domain / Industry: ${context.domain || industry}
+- Audience: ${context.audience || "not specified"}
+- Tone: ${context.tone}
+- Visual vibe: ${context.visual}
+- Notes: ${context.notes || "none"}
 
-Goal: convince a potential customer to explore the product.
-
-Structure:
-1. personalized style hook
-2. short problem statement
-3. short solution explanation
-4. invitation to book demo
-
-Duration: 15-20 seconds.
-CTA: book a demo or learn more.
-`;
-    }
-
-    if (useCase === "product_explainer") {
-      useCaseInstruction = `
-USE CASE: PRODUCT EXPLAINER
-
-Goal: clearly explain a product or feature.
-
-Structure:
-1. hook
-2. what problem it solves
-3. how it works
-4. benefit
-
-Duration: 25-40 seconds.
-CTA: try it today.
-`;
-    }
-
-    if (useCase === "founder_ceo") {
-      useCaseInstruction = `
-USE CASE: FOUNDER MESSAGE
-
-Goal: communicate leadership vision.
-
-Structure:
-1. founder perspective
-2. mission
-3. short insight
-4. invitation to join
-
-Duration: 25-30 seconds.
-Tone: authentic and visionary.
-`;
-    }
-
-    if (useCase === "business_spokesperson") {
-      useCaseInstruction = `
-USE CASE: BUSINESS SPOKESPERSON
-
-Goal: represent the company professionally.
-
-Structure:
-1. strong hook
-2. what the company does
-3. key benefit
-4. CTA
-
-Duration: 20-30 seconds.
-`;
-    }
+INTERPRETATION RULE:
+Use this context as creative direction, not as metadata.
+It should influence the script naturally.
+`.trim();
 
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
-Create a hyper-realistic AI presenter in JSON.
+Create a hyper-realistic AI presenter in VALID JSON.
 
 ${genderRule}
 
-Industry: ${context.domain || industry}
-Energy: ${energy}
-Style: ${style}
+BASE PROFILE:
+- Age range: ${age}
+- Industry: ${context.domain || industry}
+- Energy: ${energy}
+- Style: ${style}
 
 ${useCaseInstruction}
 
+${contextBlock}
+
+PRESENTER RULES:
+- realistic first + last name
+- name must match gender
+- title must match the use case
+- bio must sound credible and professional
+- appearance should describe a premium, believable spokesperson suitable for the chosen use case
+- do not reference celebrities or real people
+
 SCRIPT RULES:
-- language: Romanian unless prompt specifies otherwise
+- language: Romanian unless the user prompt clearly requests another language
 - natural spoken language
 - not robotic
 - strong first sentence
 - persuasive but not exaggerated
-- no marketing hype words
+- avoid clichés and fake hype
+- make it feel spoken on camera, not written for a brochure
+- short clean sentences
+- clear spoken rhythm
+- target duration based on the chosen use case
+- include CTA only when appropriate for that use case
 
 ${userPrompt ? `USER PROMPT:\n${userPrompt}` : ""}
 
-Return ONLY JSON.
+Return ONLY the JSON object.
 `.trim(),
       text: {
         format: {
@@ -237,7 +334,7 @@ Return ONLY JSON.
 
     try {
       presenter = JSON.parse(jsonText);
-    } catch (e: any) {
+    } catch {
       return Response.json({ error: "JSON parse failed", raw: jsonText }, { status: 500 });
     }
 
@@ -247,7 +344,27 @@ Ultra realistic cinematic portrait.
 GENDER: ${presenter.gender}
 AGE RANGE: ${age}
 
+IDENTITY / APPEARANCE:
 ${presenter.appearance}
+
+USE CASE:
+${useCase}
+
+BRAND CONTEXT:
+- Domain: ${context.domain || industry}
+- Tone: ${context.tone}
+- Visual vibe: ${context.visual}
+- Location: ${context.location || "not specified"}
+
+IMPORTANT:
+- premium spokesperson look
+- believable real human
+- not resembling any real public person
+- professional commercial portrait
+- camera-ready face and wardrobe
+- natural skin texture
+- subtle imperfections
+- elegant lighting
 
 Shot on 85mm lens
 studio lighting
@@ -261,7 +378,9 @@ extreme detail
     });
 
     const b64 = img.data?.[0]?.b64_json;
-    if (!b64) return Response.json({ error: "Image generation failed" }, { status: 500 });
+    if (!b64) {
+      return Response.json({ error: "Image generation failed" }, { status: 500 });
+    }
 
     const ins = await supabaseAdmin
       .from("presenters")
@@ -274,6 +393,7 @@ extreme detail
         appearance: presenter.appearance,
         prompt: userPrompt,
         context,
+        use_case: useCase,
         gender: presenter.gender,
         age,
         industry: context.domain || industry,
@@ -292,11 +412,19 @@ extreme detail
     const bytes = Buffer.from(b64, "base64");
     const filePath = `${presenterId}/${randomId()}.png`;
 
-    await supabaseAdmin.storage.from(BUCKET).upload(filePath, bytes, {
+    const upload = await supabaseAdmin.storage.from(BUCKET).upload(filePath, bytes, {
       contentType: "image/png",
+      upsert: false,
     });
 
-    await supabaseAdmin.from("presenters").update({ image_path: filePath }).eq("id", presenterId);
+    if (upload.error) {
+      return Response.json({ error: upload.error.message }, { status: 500 });
+    }
+
+    await supabaseAdmin
+      .from("presenters")
+      .update({ image_path: filePath })
+      .eq("id", presenterId);
 
     const scriptIns = await supabaseAdmin
       .from("presenter_scripts")
@@ -312,10 +440,30 @@ extreme detail
           energy,
           style,
           useCase,
+          audience: context.audience || null,
+          tone: context.tone || null,
+          visual: context.visual || null,
+          location: context.location || null,
         },
       })
-      .select("id")
+      .select("id,version,content")
       .single();
+
+    if (!scriptIns.error && scriptIns.data?.id) {
+      await supabaseAdmin
+        .from("presenter_script_versions")
+        .upsert(
+          {
+            script_id: scriptIns.data.id,
+            content: scriptIns.data.content,
+            version: scriptIns.data.version,
+            source: "snapshot",
+            meta: { reason: "generate-script", useCase },
+            created_by: userId,
+          },
+          { onConflict: "script_id,version", ignoreDuplicates: true }
+        );
+    }
 
     const signedUrl = await getSignedUrl(filePath);
 
@@ -326,6 +474,7 @@ extreme detail
       image: signedUrl,
       prompt: userPrompt,
       context,
+      useCase,
     });
   } catch (error: any) {
     console.error("AI ROUTE ERROR:", error);
