@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type ScriptDTO = {
   id: string;
-  presenterId: string; // may be missing/unstable after merges; DO NOT use for URLs
+  presenterId: string;
   content: string;
   language: string;
   version: number;
@@ -58,6 +58,23 @@ type VideoJobDTO = {
   updatedAt?: string;
 };
 
+type VideoDirection = {
+  shot: string;
+  delivery: string;
+  movement: string;
+  background: string;
+};
+
+type ContextState = {
+  location: string;
+  domain: string;
+  audience: string;
+  tone: string;
+  visual: string;
+  notes: string;
+  videoDirection: VideoDirection;
+};
+
 function useDebouncedCallback(fn: () => void, ms: number) {
   const t = useRef<number | null>(null);
   return () => {
@@ -90,6 +107,63 @@ function getUseCaseLabel(raw?: string | null) {
   }
 }
 
+function getDefaultVideoDirection(useCase?: string | null): VideoDirection {
+  switch (useCase) {
+    case "sales_outreach":
+      return {
+        shot: "medium",
+        delivery: "energetic",
+        movement: "subtle-motion",
+        background: "office",
+      };
+    case "founder_ceo":
+      return {
+        shot: "close-up",
+        delivery: "executive",
+        movement: "static",
+        background: "studio",
+      };
+    case "product_explainer":
+      return {
+        shot: "waist-up",
+        delivery: "clear",
+        movement: "subtle-motion",
+        background: "abstract",
+      };
+    case "business_spokesperson":
+    default:
+      return {
+        shot: "medium",
+        delivery: "executive",
+        movement: "static",
+        background: "studio",
+      };
+  }
+}
+
+function normalizeVideoDirection(
+  raw: any,
+  useCase?: string | null
+): VideoDirection {
+  const fallback = getDefaultVideoDirection(useCase);
+
+  return {
+    shot: typeof raw?.shot === "string" && raw.shot.trim() ? raw.shot.trim() : fallback.shot,
+    delivery:
+      typeof raw?.delivery === "string" && raw.delivery.trim()
+        ? raw.delivery.trim()
+        : fallback.delivery,
+    movement:
+      typeof raw?.movement === "string" && raw.movement.trim()
+        ? raw.movement.trim()
+        : fallback.movement,
+    background:
+      typeof raw?.background === "string" && raw.background.trim()
+        ? raw.background.trim()
+        : fallback.background,
+  };
+}
+
 export default function ScriptEditor({
   initialScript,
   initialPresenter,
@@ -110,7 +184,6 @@ export default function ScriptEditor({
   } | null>(null);
 
   const suppressNextAutosave = useRef(false);
-
   const dirty = useMemo(() => draft !== script.content, [draft, script.content]);
 
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -125,7 +198,6 @@ export default function ScriptEditor({
   );
 
   const [previewMode, setPreviewMode] = useState<"preview" | "diff">("preview");
-
   const [previewText, setPreviewText] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string>("");
@@ -136,9 +208,10 @@ export default function ScriptEditor({
   const previewAbortRef = useRef<AbortController | null>(null);
 
   const presenterId = presenter?.id;
+  const presenterUseCaseRaw = presenter?.useCase ?? presenter?.context?.useCase ?? null;
   const presenterUseCaseLabel = useMemo(
-    () => getUseCaseLabel(presenter?.useCase ?? presenter?.context?.useCase ?? null),
-    [presenter]
+    () => getUseCaseLabel(presenterUseCaseRaw),
+    [presenterUseCaseRaw]
   );
 
   const POLL_MS = 2000;
@@ -162,18 +235,6 @@ export default function ScriptEditor({
   const [rendering, setRendering] = useState(false);
   const [renderJob, setRenderJob] = useState<VideoJobDTO | null>(null);
 
-  const kickWorkerOnce = async () => {
-    try {
-      await fetch(`/api/video-jobs/run-worker`, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-      }).catch(() => {});
-    } catch {
-      // ignore
-    }
-  };
-
   const checkVideoStatus = async (): Promise<VideoJobDTO | null> => {
     if (!presenterId) return null;
 
@@ -191,13 +252,8 @@ export default function ScriptEditor({
 
       const payload = await safeJson(res);
 
-      if (res.status === 404) {
-        return null;
-      }
-
-      if (!res.ok) {
-        return null;
-      }
+      if (res.status === 404) return null;
+      if (!res.ok) return null;
 
       const job: any = payload?.job ?? null;
       if (!job) return null;
@@ -324,7 +380,6 @@ export default function ScriptEditor({
 
       if (restored?.content != null) {
         suppressNextAutosave.current = true;
-
         setConflict(null);
         setStatus("idle");
 
@@ -484,26 +539,36 @@ export default function ScriptEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draft, script.version, status, presenterId]);
 
-  const [ctx, setCtx] = useState(() => ({
+  const [ctx, setCtx] = useState<ContextState>(() => ({
     location: presenter.context?.location ?? "",
     domain: presenter.context?.domain ?? "",
     audience: presenter.context?.audience ?? "",
     tone: presenter.context?.tone ?? "premium",
     visual: presenter.context?.visual ?? "apple-cinematic",
     notes: presenter.context?.notes ?? "",
+    videoDirection: normalizeVideoDirection(
+      presenter.context?.videoDirection,
+      presenterUseCaseRaw
+    ),
   }));
 
   const ctxDirty = useMemo(() => {
     const prev = presenter.context ?? {};
+    const prevVideoDirection = normalizeVideoDirection(prev.videoDirection, presenterUseCaseRaw);
+
     return (
       (prev.location ?? "") !== ctx.location ||
       (prev.domain ?? "") !== ctx.domain ||
       (prev.audience ?? "") !== ctx.audience ||
       (prev.tone ?? "premium") !== ctx.tone ||
       (prev.visual ?? "apple-cinematic") !== ctx.visual ||
-      (prev.notes ?? "") !== ctx.notes
+      (prev.notes ?? "") !== ctx.notes ||
+      prevVideoDirection.shot !== ctx.videoDirection.shot ||
+      prevVideoDirection.delivery !== ctx.videoDirection.delivery ||
+      prevVideoDirection.movement !== ctx.videoDirection.movement ||
+      prevVideoDirection.background !== ctx.videoDirection.background
     );
-  }, [ctx, presenter.context]);
+  }, [ctx, presenter.context, presenterUseCaseRaw]);
 
   const saveContext = async () => {
     if (status === "offline") return;
@@ -940,69 +1005,184 @@ export default function ScriptEditor({
           </div>
         </div>
 
-        <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
-          <div className="px-5 py-4 border-b border-white/10">
-            <div className="text-sm font-semibold">Scene / Context</div>
-            <div className="text-xs text-white/50 mt-1">
-              Set the location, domain, and tone. AI becomes more “director-like”.
+        <div className="space-y-6">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/10">
+              <div className="text-sm font-semibold">Scene / Context</div>
+              <div className="text-xs text-white/50 mt-1">
+                Set the location, domain, and tone. AI becomes more “director-like”.
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <Field
+                label="Location"
+                value={ctx.location}
+                onChange={(v) => setCtx((p) => ({ ...p, location: v }))}
+                placeholder='e.g. "modern studio", "corporate conference", "sunset rooftop"'
+              />
+              <Field
+                label="Industry / Domain"
+                value={ctx.domain}
+                onChange={(v) => setCtx((p) => ({ ...p, domain: v }))}
+                placeholder='e.g. "fintech", "real estate", "healthcare"'
+              />
+              <Field
+                label="Audience"
+                value={ctx.audience}
+                onChange={(v) => setCtx((p) => ({ ...p, audience: v }))}
+                placeholder='e.g. "CFOs", "SMB owners", "students"'
+              />
+
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Tone</div>
+                <div className="flex flex-wrap gap-2">
+                  {["premium", "friendly", "authoritative", "cinematic"].map((t) => (
+                    <Chip key={t} active={ctx.tone === t} onClick={() => setCtx((p) => ({ ...p, tone: t }))} text={t} />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Visual vibe</div>
+                <div className="flex flex-wrap gap-2">
+                  {["apple-cinematic", "ultra-minimal", "dark-studio"].map((v) => (
+                    <Chip key={v} active={ctx.visual === v} onClick={() => setCtx((p) => ({ ...p, visual: v }))} text={v} />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Notes (optional)</div>
+                <textarea
+                  className="w-full rounded-2xl border border-white/10 bg-neutral-950/40 p-4 outline-none min-h-[110px] focus:border-white/20 focus:bg-neutral-950/55 transition"
+                  value={ctx.notes}
+                  onChange={(e) => setCtx((p) => ({ ...p, notes: e.target.value }))}
+                  placeholder='e.g. "static shot, soft light, calm pace, clear CTA"'
+                />
+              </div>
+
+              <div className="text-xs text-white/45">{ctxDirty ? "Saving context…" : "Context up to date"}</div>
+
+              <div className="pt-2">
+                <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
+                  <div className="text-xs uppercase tracking-widest text-white/50 mb-2">AI highlight</div>
+                  <div className="text-sm text-white/75 leading-relaxed">
+                    Use context as “set & direction”. When you regenerate, the prompt stays consistent and cinematic.
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="p-5 space-y-4">
-            <Field
-              label="Location"
-              value={ctx.location}
-              onChange={(v) => setCtx((p) => ({ ...p, location: v }))}
-              placeholder='e.g. "modern studio", "corporate conference", "sunset rooftop"'
-            />
-            <Field
-              label="Industry / Domain"
-              value={ctx.domain}
-              onChange={(v) => setCtx((p) => ({ ...p, domain: v }))}
-              placeholder='e.g. "fintech", "real estate", "healthcare"'
-            />
-            <Field
-              label="Audience"
-              value={ctx.audience}
-              onChange={(v) => setCtx((p) => ({ ...p, audience: v }))}
-              placeholder='e.g. "CFOs", "SMB owners", "students"'
-            />
-
-            <div>
-              <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Tone</div>
-              <div className="flex flex-wrap gap-2">
-                {["premium", "friendly", "authoritative", "cinematic"].map((t) => (
-                  <Chip key={t} active={ctx.tone === t} onClick={() => setCtx((p) => ({ ...p, tone: t }))} text={t} />
-                ))}
+          <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/10">
+              <div className="text-sm font-semibold">Video Direction</div>
+              <div className="text-xs text-white/50 mt-1">
+                Set how the final spokesperson should feel on screen.
               </div>
             </div>
 
-            <div>
-              <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Visual vibe</div>
-              <div className="flex flex-wrap gap-2">
-                {["apple-cinematic", "ultra-minimal", "dark-studio"].map((v) => (
-                  <Chip key={v} active={ctx.visual === v} onClick={() => setCtx((p) => ({ ...p, visual: v }))} text={v} />
-                ))}
+            <div className="p-5 space-y-5">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Shot</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "close-up", label: "Close-up" },
+                    { value: "medium", label: "Medium Shot" },
+                    { value: "waist-up", label: "Waist Up" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.videoDirection.shot === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          videoDirection: { ...p.videoDirection, shot: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div>
-              <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Notes (optional)</div>
-              <textarea
-                className="w-full rounded-2xl border border-white/10 bg-neutral-950/40 p-4 outline-none min-h-[110px] focus:border-white/20 focus:bg-neutral-950/55 transition"
-                value={ctx.notes}
-                onChange={(e) => setCtx((p) => ({ ...p, notes: e.target.value }))}
-                placeholder='e.g. "static shot, soft light, calm pace, clear CTA"'
-              />
-            </div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Delivery</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "calm", label: "Calm" },
+                    { value: "executive", label: "Executive" },
+                    { value: "energetic", label: "Energetic" },
+                    { value: "clear", label: "Clear" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.videoDirection.delivery === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          videoDirection: { ...p.videoDirection, delivery: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
+              </div>
 
-            <div className="text-xs text-white/45">{ctxDirty ? "Saving context…" : "Context up to date"}</div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Movement</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "static", label: "Static" },
+                    { value: "subtle-motion", label: "Subtle Motion" },
+                    { value: "cinematic", label: "Cinematic" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.videoDirection.movement === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          videoDirection: { ...p.videoDirection, movement: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
+              </div>
 
-            <div className="pt-2">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Background</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "studio", label: "Studio" },
+                    { value: "office", label: "Office" },
+                    { value: "abstract", label: "Abstract" },
+                    { value: "dark", label: "Dark Set" },
+                  ].map((item) => (
+                    <Chip
+                      key={item.value}
+                      active={ctx.videoDirection.background === item.value}
+                      onClick={() =>
+                        setCtx((p) => ({
+                          ...p,
+                          videoDirection: { ...p.videoDirection, background: item.value },
+                        }))
+                      }
+                      text={item.label}
+                    />
+                  ))}
+                </div>
+              </div>
+
               <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">AI highlight</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Current direction</div>
                 <div className="text-sm text-white/75 leading-relaxed">
-                  Use context as “set & direction”. When you regenerate, the prompt stays consistent and cinematic.
+                  {ctx.videoDirection.shot}, {ctx.videoDirection.delivery}, {ctx.videoDirection.movement},{" "}
+                  {ctx.videoDirection.background}
                 </div>
               </div>
             </div>
@@ -1062,7 +1242,9 @@ export default function ScriptEditor({
                             }}
                             className={cx(
                               "w-full text-left rounded-2xl border p-4 transition",
-                              active ? "border-white/20 bg-white/[0.07]" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.05]"
+                              active
+                                ? "border-white/20 bg-white/[0.07]"
+                                : "border-white/10 bg-white/[0.03] hover:bg-white/[0.05]"
                             )}
                           >
                             <div className="flex items-start justify-between gap-3">
@@ -1145,7 +1327,8 @@ export default function ScriptEditor({
                             className={cx(
                               "rounded-full px-4 py-2 text-sm font-semibold transition border",
                               "border-white/12 bg-white/8 hover:bg-white/12",
-                              (restoreBusyId === selected.id || status === "offline" || !presenterId) && "opacity-50 cursor-not-allowed"
+                              (restoreBusyId === selected.id || status === "offline" || !presenterId) &&
+                                "opacity-50 cursor-not-allowed"
                             )}
                           >
                             Restore
@@ -1265,7 +1448,11 @@ export default function ScriptEditor({
 
 function StatusPill({ status, label }: { status: SaveStatus; label: string }) {
   const dotClass =
-    status === "saving" || status === "transforming" ? "animate-pulse" : status === "error" || status === "conflict" ? "" : "";
+    status === "saving" || status === "transforming"
+      ? "animate-pulse"
+      : status === "error" || status === "conflict"
+      ? ""
+      : "";
 
   const dotColor =
     status === "saving" || status === "transforming"
@@ -1351,10 +1538,6 @@ function DiffBlock({
   );
 }
 
-function normalizeLines(t: string) {
-  return (t ?? "").replace(/\r\n/g, "\n").split("\n");
-}
-
 async function safeJson(res: Response) {
   const contentType = res.headers.get("content-type") || "";
   const status = res.status;
@@ -1373,4 +1556,8 @@ async function safeJson(res: Response) {
   } catch {
     return { _debug: { status, contentType } };
   }
+}
+
+function normalizeLines(t: string) {
+  return (t ?? "").replace(/\r\n/g, "\n").split("\n");
 }
