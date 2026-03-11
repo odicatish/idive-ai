@@ -277,28 +277,26 @@ function pickVoiceByGenderAndStyle(opts: {
   const d = opts.delivery.toLowerCase();
   const v = opts.voiceStyle.toLowerCase();
 
-  // female leaning
+  // FEMALE: prioritize clearly feminine voices first
   if (gender === "female") {
     if (lang === "ro") {
+      if (d === "executive" || v === "authoritative") return "shimmer";
       if (d === "energetic" || v === "energetic") return "shimmer";
-      if (d === "clear" || v === "clear") return "marin";
-      if (d === "executive" || v === "authoritative") return "alloy";
-      return "alloy";
+      if (d === "clear" || v === "clear") return "shimmer";
+      return "shimmer";
     }
 
     if (lang === "en") {
+      if (d === "executive" || v === "authoritative") return "shimmer";
       if (d === "energetic" || v === "energetic") return "shimmer";
       if (d === "clear" || v === "clear") return "alloy";
-      if (d === "executive" || v === "authoritative") return "alloy";
-      return "alloy";
+      return "shimmer";
     }
 
-    if (d === "energetic" || v === "energetic") return "shimmer";
-    if (d === "clear" || v === "clear") return "alloy";
-    return "alloy";
+    return "shimmer";
   }
 
-  // male leaning
+  // MALE
   if (gender === "male") {
     if (lang === "ro") {
       if (d === "energetic" || v === "energetic") return "verse";
@@ -319,24 +317,21 @@ function pickVoiceByGenderAndStyle(opts: {
     return "cedar";
   }
 
-  // unknown fallback
+  // UNKNOWN fallback
   if (lang === "ro") {
     if (d === "energetic" || v === "energetic") return "verse";
     if (d === "clear" || v === "clear") return "marin";
-    if (d === "executive" || v === "authoritative") return "cedar";
+    if (d === "executive" || v === "authoritative") return "marin";
     return "marin";
   }
 
   if (lang === "en") {
     if (d === "energetic" || v === "energetic") return "shimmer";
     if (d === "clear" || v === "clear") return "marin";
-    if (d === "executive" || v === "authoritative") return "cedar";
+    if (d === "executive" || v === "authoritative") return "marin";
     return "marin";
   }
 
-  if (d === "energetic" || v === "energetic") return "shimmer";
-  if (d === "clear" || v === "clear") return "marin";
-  if (d === "executive" || v === "authoritative") return "cedar";
   return "marin";
 }
 
