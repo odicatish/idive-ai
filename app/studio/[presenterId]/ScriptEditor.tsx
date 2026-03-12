@@ -81,6 +81,16 @@ type ContextState = {
   voiceProfile: VoiceProfile;
 };
 
+type BillingPlan = "free" | "pro" | "business";
+
+type PaywallState = {
+  open: boolean;
+  currentPlan: BillingPlan;
+  limit: number;
+  used: number;
+  message: string;
+};
+
 function useDebouncedCallback(fn: () => void, ms: number) {
   const t = useRef<number | null>(null);
   return () => {
@@ -221,6 +231,18 @@ function getRenderStatusTone(status?: string | null) {
   return "text-white/70";
 }
 
+function getPlanLabel(plan: BillingPlan) {
+  switch (plan) {
+    case "pro":
+      return "Pro";
+    case "business":
+      return "Business";
+    case "free":
+    default:
+      return "Free";
+  }
+}
+
 export default function ScriptEditor({
   initialScript,
   initialPresenter,
@@ -260,6 +282,15 @@ export default function ScriptEditor({
   const [previewError, setPreviewError] = useState<string>("");
 
   const [confirm, setConfirm] = useState<ConfirmState>(null);
+
+  const [paywall, setPaywall] = useState<PaywallState>({
+    open: false,
+    currentPlan: "free",
+    limit: 1,
+    used: 0,
+    message: "",
+  });
+  const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<BillingPlan | null>(null);
 
   const previewCache = useRef<Map<string, string>>(new Map());
   const previewAbortRef = useRef<AbortController | null>(null);
@@ -731,6 +762,39 @@ export default function ScriptEditor({
     }
   };
 
+  const startCheckout = async (plan: "pro" | "business") => {
+    setCheckoutBusyPlan(plan);
+
+    try {
+      const res = await fetch(`/api/stripe/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ plan }),
+      });
+
+      const payload = await safeJson(res);
+
+      if (!res.ok) {
+        console.error("CHECKOUT_ERROR", payload);
+        alert(payload?.error ?? "Could not start checkout.");
+        return;
+      }
+
+      if (!payload?.url || typeof payload.url !== "string") {
+        alert("Missing checkout URL.");
+        return;
+      }
+
+      window.location.href = payload.url;
+    } catch (e) {
+      console.error("CHECKOUT_THROW", e);
+      alert("Could not start checkout.");
+    } finally {
+      setCheckoutBusyPlan(null);
+    }
+  };
+
   const renderVideo = async () => {
     if (status === "offline") return;
     if (!presenterId) return;
@@ -749,6 +813,21 @@ export default function ScriptEditor({
       if (res.status === 422) {
         console.warn("RENDER_WARN_422", payload);
         alert("Script is too short for rendering a video. Add more text and try again.");
+        return;
+      }
+
+      if (res.status === 403 && payload?.error === "VIDEO_LIMIT_REACHED") {
+        setPaywall({
+          open: true,
+          currentPlan:
+            payload?.plan === "business" || payload?.plan === "pro" ? payload.plan : "free",
+          limit: Number(payload?.limit ?? 1),
+          used: Number(payload?.used ?? 0),
+          message:
+            typeof payload?.message === "string" && payload.message.trim()
+              ? payload.message
+              : "You reached your monthly video limit.",
+        });
         return;
       }
 
@@ -1372,6 +1451,112 @@ export default function ScriptEditor({
         </div>
       </div>
 
+      {paywall.open && (
+        <div className="fixed inset-0 z-[70]">
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => setPaywall((prev) => ({ ...prev, open: false }))}
+          />
+
+          <div className="absolute left-1/2 top-1/2 w-[92%] max-w-2xl -translate-x-1/2 -translate-y-1/2">
+            <div className="rounded-[32px] border border-white/10 bg-neutral-950/95 shadow-[0_30px_120px_rgba(0,0,0,0.8)] overflow-hidden">
+              <div className="border-b border-white/10 px-6 py-5">
+                <div className="text-xs uppercase tracking-[0.22em] text-purple-300/70">
+                  Upgrade required
+                </div>
+                <h3 className="mt-3 text-2xl font-semibold tracking-tight">
+                  You reached your monthly video limit
+                </h3>
+                <p className="mt-3 text-sm leading-7 text-white/65">
+                  {paywall.message}
+                </p>
+              </div>
+
+              <div className="px-6 py-6">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                  <div className="text-xs uppercase tracking-widest text-white/45">
+                    Current plan
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-semibold">
+                      {getPlanLabel(paywall.currentPlan)}
+                    </span>
+                    <span className="text-sm text-white/50">
+                      {paywall.used} / {paywall.limit} videos used this month
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5">
+                    <div className="text-sm font-semibold">Pro</div>
+                    <div className="mt-2 text-3xl font-semibold tracking-tight">$29</div>
+                    <div className="mt-1 text-sm text-white/45">per month</div>
+
+                    <div className="mt-5 space-y-2 text-sm text-white/70">
+                      <div>20 videos / month</div>
+                      <div>Better output capacity</div>
+                      <div>Ideal for founders and marketers</div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void startCheckout("pro")}
+                      disabled={checkoutBusyPlan !== null}
+                      className={cx(
+                        "mt-6 w-full rounded-2xl px-4 py-3 text-sm font-semibold transition",
+                        "border border-white/12 bg-white text-black hover:opacity-90",
+                        checkoutBusyPlan !== null && "opacity-60 cursor-not-allowed"
+                      )}
+                    >
+                      {checkoutBusyPlan === "pro" ? "Redirecting…" : "Upgrade to Pro"}
+                    </button>
+                  </div>
+
+                  <div className="rounded-3xl border border-purple-400/20 bg-purple-500/10 p-5">
+                    <div className="text-sm font-semibold text-purple-100">Business</div>
+                    <div className="mt-2 text-3xl font-semibold tracking-tight">$79</div>
+                    <div className="mt-1 text-sm text-white/45">per month</div>
+
+                    <div className="mt-5 space-y-2 text-sm text-white/75">
+                      <div>60 videos / month</div>
+                      <div>Higher monthly capacity</div>
+                      <div>Best for teams and heavier usage</div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void startCheckout("business")}
+                      disabled={checkoutBusyPlan !== null}
+                      className={cx(
+                        "mt-6 w-full rounded-2xl px-4 py-3 text-sm font-semibold transition",
+                        "border border-purple-400/25 bg-purple-500/20 text-white hover:bg-purple-500/25",
+                        checkoutBusyPlan !== null && "opacity-60 cursor-not-allowed"
+                      )}
+                    >
+                      {checkoutBusyPlan === "business"
+                        ? "Redirecting…"
+                        : "Upgrade to Business"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex items-center justify-between gap-3 text-xs text-white/45">
+                  <div>Need more monthly capacity to keep rendering videos.</div>
+                  <button
+                    type="button"
+                    onClick={() => setPaywall((prev) => ({ ...prev, open: false }))}
+                    className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs font-semibold text-white/75 transition hover:bg-white/10"
+                  >
+                    Maybe later
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {historyOpen && (
         <div className="fixed inset-0 z-50">
           <div
@@ -1525,7 +1710,9 @@ export default function ScriptEditor({
 
                           <button
                             type="button"
-                            disabled={restoreBusyId === selected.id || status === "offline" || !presenterId}
+                            disabled={
+                              restoreBusyId === selected.id || status === "offline" || !presenterId
+                            }
                             onClick={() =>
                               setConfirm({ versionId: selected.id, version: selected.version })
                             }
@@ -1636,7 +1823,11 @@ export default function ScriptEditor({
                       </button>
                       <button
                         type="button"
-                        disabled={restoreBusyId === confirm.versionId || status === "offline" || !presenterId}
+                        disabled={
+                          restoreBusyId === confirm.versionId ||
+                          status === "offline" ||
+                          !presenterId
+                        }
                         onClick={async () => {
                           const v = confirm;
                           setConfirm(null);
