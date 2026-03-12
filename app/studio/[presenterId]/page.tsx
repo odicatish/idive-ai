@@ -19,36 +19,38 @@ export default async function StudioPage({ params }: { params: Params }) {
   const supabase = await supabaseServer();
 
   const { data: auth, error: authErr } = await supabase.auth.getUser();
-  if (authErr || !auth?.user) redirect("/login");
+  if (authErr || !auth?.user) {
+    redirect(`/login?next=${encodeURIComponent(`/studio/${presenterId}`)}`);
+  }
 
-  const { data: presenter, error: pErr } = await supabase
+  const { data: presenter, error: presenterErr } = await supabase
     .from("presenters")
     .select("id,user_id,name,context,use_case")
     .eq("id", presenterId)
     .maybeSingle();
 
-  if (pErr) {
-    console.error("PRESENTER_LOAD_ERROR", pErr);
+  if (presenterErr) {
+    console.error("STUDIO_PRESENTER_LOAD_ERROR", presenterErr);
     notFound();
   }
 
   if (!presenter || presenter.user_id !== auth.user.id) notFound();
 
-  const { data: existingScript, error: sErr } = await supabase
+  const { data: existingScript, error: scriptErr } = await supabase
     .from("presenter_scripts")
-    .select("*")
+    .select("id,presenter_id,content,language,version,updated_at,updated_by")
     .eq("presenter_id", presenterId)
     .maybeSingle();
 
-  if (sErr) {
-    console.error("SCRIPT_LOAD_ERROR", sErr);
+  if (scriptErr) {
+    console.error("STUDIO_SCRIPT_LOAD_ERROR", scriptErr);
     notFound();
   }
 
   let script = existingScript;
 
   if (!script) {
-    const { data: inserted, error: insErr } = await supabase
+    const { data: insertedScript, error: insertErr } = await supabase
       .from("presenter_scripts")
       .insert({
         presenter_id: presenterId,
@@ -57,17 +59,17 @@ export default async function StudioPage({ params }: { params: Params }) {
         created_by: auth.user.id,
         updated_by: auth.user.id,
       })
-      .select("*")
+      .select("id,presenter_id,content,language,version,updated_at,updated_by")
       .single();
 
-    if (insErr) {
-      console.error("SCRIPT_INSERT_ERROR", insErr);
+    if (insertErr || !insertedScript) {
+      console.error("STUDIO_SCRIPT_INSERT_ERROR", insertErr);
       notFound();
     }
 
-    script = inserted;
+    script = insertedScript;
 
-    const { error: histErr } = await supabase
+    const { error: historyErr } = await supabase
       .from("presenter_script_versions")
       .upsert(
         {
@@ -81,11 +83,13 @@ export default async function StudioPage({ params }: { params: Params }) {
         { onConflict: "script_id,version", ignoreDuplicates: true }
       );
 
-    if (histErr) console.warn("SCRIPT_HISTORY_UPSERT_WARN(StudioPage)", histErr);
+    if (historyErr) {
+      console.warn("STUDIO_SCRIPT_HISTORY_UPSERT_WARN", historyErr);
+    }
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
+    <div className="min-h-screen bg-black text-white">
       <ScriptEditor
         initialPresenter={{
           id: presenter.id,
