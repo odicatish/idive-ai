@@ -1,4 +1,3 @@
-// app/api/stripe/status/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
@@ -6,7 +5,14 @@ import { createServerClient } from "@supabase/ssr";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const PLAN_LIMITS = {
+  free: 1,
+  pro: 20,
+  business: 60
+};
+
 export async function GET() {
+
   const cookieStore = await cookies();
 
   const supabase = createServerClient(
@@ -18,35 +24,43 @@ export async function GET() {
           return cookieStore.get(name)?.value;
         },
         set() {},
-        remove() {},
-      },
+        remove() {}
+      }
     }
   );
 
   const { data: auth, error: authError } = await supabase.auth.getUser();
+
   if (authError || !auth?.user) {
     return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
   }
 
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("subscriptions")
-    .select("status, current_period_end, price_id")
+    .select("status, price_id")
     .eq("user_id", auth.user.id)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  let plan: "free" | "pro" | "business" = "free";
+
+  if (data?.status === "active" || data?.status === "trialing") {
+
+    if (data.price_id === process.env.STRIPE_PRICE_ID_PRO) {
+      plan = "pro";
+    }
+
+    if (data.price_id === process.env.STRIPE_PRICE_ID_BUSINESS) {
+      plan = "business";
+    }
+
   }
 
-  const active =
-    data?.status === "active" || data?.status === "trialing";
-
   return NextResponse.json({
-    pro: !!active,
-    status: data?.status ?? null,
-    current_period_end: data?.current_period_end ?? null,
-    price_id: data?.price_id ?? null,
+    plan,
+    video_limit: PLAN_LIMITS[plan],
+    active: plan !== "free"
   });
+
 }
