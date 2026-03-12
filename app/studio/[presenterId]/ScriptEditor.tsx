@@ -91,6 +91,13 @@ type PaywallState = {
   message: string;
 };
 
+type PlanInfo = {
+  plan: BillingPlan;
+  video_limit: number;
+  videos_used: number;
+  active: boolean;
+};
+
 function useDebouncedCallback(fn: () => void, ms: number) {
   const t = useRef<number | null>(null);
   return () => {
@@ -291,6 +298,7 @@ export default function ScriptEditor({
     message: "",
   });
   const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<BillingPlan | null>(null);
+  const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null);
 
   const previewCache = useRef<Map<string, string>>(new Map());
   const previewAbortRef = useRef<AbortController | null>(null);
@@ -388,6 +396,31 @@ export default function ScriptEditor({
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presenterId]);
+
+  useEffect(() => {
+    fetch("/api/stripe/status", {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+    })
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!r.ok || !data) return;
+        if (
+          data.plan === "free" ||
+          data.plan === "pro" ||
+          data.plan === "business"
+        ) {
+          setPlanInfo({
+            plan: data.plan,
+            video_limit: Number(data.video_limit ?? 0),
+            videos_used: Number(data.videos_used ?? 0),
+            active: !!data.active,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const loadVersions = async () => {
     if (!presenterId) return;
@@ -848,6 +881,25 @@ export default function ScriptEditor({
         setRenderJob((prev) => prev ?? { id: "unknown", status: "queued", progress: 0 });
       }
 
+      if (payload?.billing && planInfo) {
+        setPlanInfo((prev) =>
+          prev
+            ? {
+                ...prev,
+                plan:
+                  payload.billing.plan === "free" ||
+                  payload.billing.plan === "pro" ||
+                  payload.billing.plan === "business"
+                    ? payload.billing.plan
+                    : prev.plan,
+                video_limit: Number(payload.billing.limit ?? prev.video_limit),
+                videos_used: Number(payload.billing.used ?? prev.videos_used),
+                active: payload.billing.plan !== "free",
+              }
+            : prev
+        );
+      }
+
       fetch(`/api/video-jobs/run-worker`, {
         method: "POST",
         credentials: "include",
@@ -977,6 +1029,8 @@ export default function ScriptEditor({
     return rows;
   }, [draft, previewText]);
 
+  const displayUsed = planInfo ? Math.min(planInfo.videos_used, planInfo.video_limit) : 0;
+
   return (
     <div className="min-h-screen bg-black text-white">
       <div className="sticky top-0 z-20 border-b border-white/10 bg-black/75 backdrop-blur-xl">
@@ -1002,6 +1056,29 @@ export default function ScriptEditor({
               <div className="mt-2 text-sm text-white/45">
                 Edit your script, refine the direction, and render the final presenter video.
               </div>
+
+              {planInfo && (
+                <div className="mt-3 inline-flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs">
+                  <span className="text-white/60">{getPlanLabel(planInfo.plan)} plan</span>
+                  <span className="text-white/30">•</span>
+                  <span className="text-white/80">
+                    {displayUsed} / {planInfo.video_limit} videos used this month
+                  </span>
+
+                  {planInfo.plan === "free" && (
+                    <>
+                      <span className="text-white/30">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setPaywall((prev) => ({ ...prev, open: true }))}
+                        className="text-purple-300 underline underline-offset-2 transition hover:text-purple-200"
+                      >
+                        Upgrade
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
 
               {renderJob && (
                 <div className="mt-3 inline-flex flex-wrap items-center gap-2 rounded-2xl border border-purple-400/15 bg-purple-500/10 px-3 py-2 text-xs">
@@ -1467,9 +1544,7 @@ export default function ScriptEditor({
                 <h3 className="mt-3 text-2xl font-semibold tracking-tight">
                   You reached your monthly video limit
                 </h3>
-                <p className="mt-3 text-sm leading-7 text-white/65">
-                  {paywall.message}
-                </p>
+                <p className="mt-3 text-sm leading-7 text-white/65">{paywall.message}</p>
               </div>
 
               <div className="px-6 py-6">
