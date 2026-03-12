@@ -72,6 +72,20 @@ function normalizeVideoDirection(raw: any) {
   };
 }
 
+function getPlanAndLimit(priceId: string | null, status: string | null) {
+  const active = status === "active" || status === "trialing";
+
+  if (active && priceId === (process.env.STRIPE_PRICE_ID_BUSINESS || "").trim()) {
+    return { plan: "business", limit: 60 };
+  }
+
+  if (active && priceId === (process.env.STRIPE_PRICE_ID_PRO || "").trim()) {
+    return { plan: "pro", limit: 20 };
+  }
+
+  return { plan: "free", limit: 1 };
+}
+
 export async function GET(req: Request, context: any) {
   const presenterId = getPresenterId(req, context);
   return NextResponse.json(
@@ -91,11 +105,47 @@ export async function POST(req: Request, context: any) {
 
   const supabase = await supabaseServer();
 
-  // auth
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
-  // verify presenter owner + load context/use_case
+  const { data: subscription, error: subErr } = await supabase
+    .from("subscriptions")
+    .select("status,price_id")
+    .eq("user_id", auth.user.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (subErr) return jsonError(500, "subscription_load_failed", subErr.message);
+
+  const billing = getPlanAndLimit(subscription?.price_id ?? null, subscription?.status ?? null);
+
+  const startOfMonth = new Date();
+  startOfMonth.setUTCDate(1);
+  startOfMonth.setUTCHours(0, 0, 0, 0);
+
+  const { count: monthlyCompletedVideos, error: countErr } = await supabase
+    .from("presenter_video_jobs")
+    .select("*", { count: "exact", head: true })
+    .eq("created_by", auth.user.id)
+    .eq("status", "completed")
+    .gte("created_at", startOfMonth.toISOString());
+
+  if (countErr) return jsonError(500, "usage_count_failed", countErr.message);
+
+  if ((monthlyCompletedVideos ?? 0) >= billing.limit) {
+    return NextResponse.json(
+      {
+        error: "VIDEO_LIMIT_REACHED",
+        message: `You reached the monthly limit of ${billing.limit} videos for the ${billing.plan} plan.`,
+        plan: billing.plan,
+        limit: billing.limit,
+        used: monthlyCompletedVideos ?? 0,
+      },
+      { status: 403 }
+    );
+  }
+
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id,context,use_case")
@@ -116,7 +166,6 @@ export async function POST(req: Request, context: any) {
       ? String((presenter as any).use_case).trim()
       : null;
 
-  // get current script
   const { data: script, error: sErr } = await supabase
     .from("presenter_scripts")
     .select("id,version,content")
@@ -130,7 +179,6 @@ export async function POST(req: Request, context: any) {
     return jsonError(422, "script_too_short_for_video");
   }
 
-  // 1) avoid duplicate active legacy jobs
   const ACTIVE = ["queued", "running", "processing"];
 
   const { data: existingJob, error: exErr } = await supabase
@@ -159,10 +207,15 @@ export async function POST(req: Request, context: any) {
         useCase,
         videoDirection,
       },
+      billing: {
+        plan: billing.plan,
+        limit: billing.limit,
+        used: monthlyCompletedVideos ?? 0,
+        remaining: Math.max(0, billing.limit - (monthlyCompletedVideos ?? 0)),
+      },
     });
   }
 
-  // 2) create legacy job
   const { data: job, error: jErr } = await supabase
     .from("presenter_video_jobs")
     .insert({
@@ -178,7 +231,6 @@ export async function POST(req: Request, context: any) {
 
   if (jErr) return jsonError(500, "job_create_failed", jErr.message);
 
-  // 3) create pipeline job + seed steps (SERVICE ROLE)
   const admin = supabaseAdminSafe();
   if (!admin.ok) {
     return NextResponse.json({
@@ -196,6 +248,12 @@ export async function POST(req: Request, context: any) {
       renderConfig: {
         useCase,
         videoDirection,
+      },
+      billing: {
+        plan: billing.plan,
+        limit: billing.limit,
+        used: monthlyCompletedVideos ?? 0,
+        remaining: Math.max(0, billing.limit - (monthlyCompletedVideos ?? 0)),
       },
     });
   }
@@ -216,6 +274,11 @@ export async function POST(req: Request, context: any) {
       notes: presenterContext?.notes ?? "",
     },
     createdFrom: "studio_render",
+    billing: {
+      plan: billing.plan,
+      limit: billing.limit,
+      usedBeforeCreate: monthlyCompletedVideos ?? 0,
+    },
   };
 
   const payload = {
@@ -250,6 +313,12 @@ export async function POST(req: Request, context: any) {
         useCase,
         videoDirection,
       },
+      billing: {
+        plan: billing.plan,
+        limit: billing.limit,
+        used: monthlyCompletedVideos ?? 0,
+        remaining: Math.max(0, billing.limit - (monthlyCompletedVideos ?? 0)),
+      },
     });
   }
 
@@ -276,10 +345,15 @@ export async function POST(req: Request, context: any) {
         useCase,
         videoDirection,
       },
+      billing: {
+        plan: billing.plan,
+        limit: billing.limit,
+        used: monthlyCompletedVideos ?? 0,
+        remaining: Math.max(0, billing.limit - (monthlyCompletedVideos ?? 0)),
+      },
     });
   }
 
-  // best-effort: attach render meta if video_render_jobs.meta exists
   let metaSaved = false;
   let metaSaveError: string | null = null;
 
@@ -301,7 +375,6 @@ export async function POST(req: Request, context: any) {
     metaSaveError = e?.message ?? String(e);
   }
 
-  // seed steps (best-effort)
   try {
     await sb.rpc("seed_video_render_steps", { p_job_id: pipelineJob.id });
   } catch {
@@ -327,6 +400,12 @@ export async function POST(req: Request, context: any) {
     pipelineMeta: {
       saved: metaSaved,
       error: metaSaveError,
+    },
+    billing: {
+      plan: billing.plan,
+      limit: billing.limit,
+      used: monthlyCompletedVideos ?? 0,
+      remaining: Math.max(0, billing.limit - (monthlyCompletedVideos ?? 0) - 1),
     },
   });
 }
