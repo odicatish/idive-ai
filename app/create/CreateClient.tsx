@@ -248,12 +248,26 @@ export default function CreateClient() {
 
   if (phase === "loading") {
     return (
-      <div className="fixed inset-0 bg-black text-white flex flex-col items-center justify-center px-6">
-        <div className="w-20 h-20 border-2 border-white/20 border-t-white rounded-full animate-spin mb-8" />
-        <p className="text-xl text-white/95 text-center">{loadingSteps[stepIndex]}</p>
-        <p className="mt-3 text-sm text-neutral-500 text-center">
-          This usually takes a moment.
-        </p>
+      <div className="fixed inset-0 overflow-hidden bg-black text-white">
+        <video
+          autoPlay
+          muted
+          loop
+          playsInline
+          className="absolute inset-0 h-full w-full object-cover opacity-30"
+        >
+          <source src="/backgrounds/generate.mp4" type="video/mp4" />
+        </video>
+
+        <div className="absolute inset-0 bg-black/65" />
+
+        <div className="relative z-10 flex h-full flex-col items-center justify-center px-6 text-center">
+          <div className="w-20 h-20 border-2 border-white/20 border-t-white rounded-full animate-spin mb-8" />
+          <p className="text-xl text-white/95 text-center">{loadingSteps[stepIndex]}</p>
+          <p className="mt-3 text-sm text-neutral-400 text-center">
+            This usually takes a moment.
+          </p>
+        </div>
       </div>
     );
   }
@@ -465,15 +479,11 @@ export default function CreateClient() {
               {selectedUseCase?.label || "Business Spokesperson"}
             </h2>
 
-            <p className="mt-3 text-neutral-400 leading-7">
-              {selectedUseCase?.desc}
-            </p>
+            <p className="mt-3 text-neutral-400 leading-7">{selectedUseCase?.desc}</p>
 
             <div className="mt-6 rounded-2xl border border-neutral-800 bg-black/40 p-5">
               <div className="text-sm font-medium text-neutral-300">Why use this</div>
-              <p className="mt-2 text-sm text-neutral-400 leading-7">
-                {getUseCaseHint(useCase)}
-              </p>
+              <p className="mt-2 text-sm text-neutral-400 leading-7">{getUseCaseHint(useCase)}</p>
             </div>
 
             <div className="mt-6 rounded-2xl border border-neutral-800 bg-black/40 p-5">
