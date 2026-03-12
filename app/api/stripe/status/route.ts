@@ -35,10 +35,12 @@ export async function GET() {
     return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
   }
 
+  const userId = auth.user.id;
+
   const { data } = await supabase
     .from("subscriptions")
     .select("status, price_id")
-    .eq("user_id", auth.user.id)
+    .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -57,9 +59,24 @@ export async function GET() {
 
   }
 
+  const limit = PLAN_LIMITS[plan];
+
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0,0,0,0);
+
+  const { count } = await supabase
+    .from("presenter_video_jobs")
+    .select("*", { count: "exact", head: true })
+    .eq("created_by", userId)
+    .gte("created_at", startOfMonth.toISOString());
+
+  const used = count ?? 0;
+
   return NextResponse.json({
     plan,
-    video_limit: PLAN_LIMITS[plan],
+    video_limit: limit,
+    videos_used: used,
     active: plan !== "free"
   });
 
