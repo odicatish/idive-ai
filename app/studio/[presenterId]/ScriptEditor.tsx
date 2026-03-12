@@ -147,10 +147,7 @@ function getDefaultVideoDirection(useCase?: string | null): VideoDirection {
   }
 }
 
-function normalizeVideoDirection(
-  raw: any,
-  useCase?: string | null
-): VideoDirection {
+function normalizeVideoDirection(raw: any, useCase?: string | null): VideoDirection {
   const fallback = getDefaultVideoDirection(useCase);
 
   return {
@@ -177,9 +174,7 @@ function normalizeVoiceProfile(raw: any): VoiceProfile {
         ? raw.genderPreference.trim()
         : "auto",
     preset:
-      typeof raw?.preset === "string" && raw.preset.trim()
-        ? raw.preset.trim()
-        : "auto",
+      typeof raw?.preset === "string" && raw.preset.trim() ? raw.preset.trim() : "auto",
   };
 }
 
@@ -200,6 +195,30 @@ function getVoicePresetLabel(v: string) {
     default:
       return v;
   }
+}
+
+function getRenderStatusLabel(status?: string | null) {
+  const s = String(status || "").toLowerCase();
+  switch (s) {
+    case "queued":
+      return "Queued";
+    case "processing":
+      return "Rendering";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    default:
+      return status || "Unknown";
+  }
+}
+
+function getRenderStatusTone(status?: string | null) {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "text-emerald-300";
+  if (s === "failed") return "text-rose-300";
+  if (s === "queued" || s === "processing") return "text-purple-200";
+  return "text-white/70";
 }
 
 export default function ScriptEditor({
@@ -361,7 +380,9 @@ export default function ScriptEditor({
       setVersions(list);
 
       if (list.length > 0) {
-        const stillExists = selectedVersionId ? list.some((v) => v.id === selectedVersionId) : false;
+        const stillExists = selectedVersionId
+          ? list.some((v) => v.id === selectedVersionId)
+          : false;
         if (!selectedVersionId || !stillExists) {
           setSelectedVersionId(list[0].id);
         }
@@ -878,124 +899,140 @@ export default function ScriptEditor({
   }, [draft, previewText]);
 
   return (
-    <div className="min-h-screen">
-      <div className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/70 backdrop-blur-xl">
-        <div className="mx-auto max-w-6xl px-5 py-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <div className="text-xs uppercase tracking-widest text-white/50">iDive Studio</div>
-            <div className="truncate text-lg font-semibold">{presenter.name}</div>
-
-            {presenterUseCaseLabel && (
-              <div className="mt-2">
-                <span className="inline-flex items-center rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-[11px] font-semibold tracking-wide text-sky-200">
-                  {presenterUseCaseLabel}
-                </span>
+    <div className="min-h-screen bg-black text-white">
+      <div className="sticky top-0 z-20 border-b border-white/10 bg-black/75 backdrop-blur-xl">
+        <div className="mx-auto max-w-6xl px-5 py-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-[0.22em] text-white/45">
+                iDive Studio
               </div>
-            )}
 
-            {renderJob && (
-              <div className="mt-1 text-xs text-purple-300/80">
-                Video job: <span className="text-purple-200">{renderJob.status}</span>{" "}
-                <span className="text-white/30">•</span>{" "}
-                <span className="text-purple-200">{renderJob.progress ?? 0}%</span>
-                {renderJob.videoUrl ? (
-                  <>
-                    {" "}
-                    <span className="text-white/30">•</span>{" "}
-                    <a
-                      className="text-purple-200 underline underline-offset-2 hover:opacity-90"
-                      href={renderJob.videoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open video
-                    </a>
-                  </>
-                ) : null}
-                {renderJob.error ? (
-                  <>
-                    {" "}
-                    <span className="text-white/30">•</span>{" "}
-                    <span className="text-rose-300">{renderJob.error}</span>
-                  </>
-                ) : null}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-2xl font-semibold tracking-tight">
+                  {presenter.name}
+                </h1>
+
+                {presenterUseCaseLabel && (
+                  <span className="inline-flex items-center rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-[11px] font-semibold tracking-wide text-sky-200">
+                    {presenterUseCaseLabel}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="flex items-center gap-3">
-            <StatusPill status={status} label={statusLabel} />
+              <div className="mt-2 text-sm text-white/45">
+                Edit your script, refine the direction, and render the final presenter video.
+              </div>
 
-            <button
-              onClick={() => setHistoryOpen(true)}
-              className="rounded-full px-4 py-2 text-sm font-semibold transition border border-white/12 bg-white/5 hover:bg-white/10"
-              type="button"
-            >
-              History
-            </button>
-
-            <button
-              onClick={() => void generateScript()}
-              disabled={status === "saving" || status === "transforming" || status === "offline"}
-              className={cx(
-                "rounded-full px-4 py-2 text-sm font-semibold transition",
-                "border border-white/12 bg-white/8 hover:bg-white/12",
-                (status === "saving" || status === "transforming" || status === "offline") &&
-                  "opacity-50 cursor-not-allowed"
+              {renderJob && (
+                <div className="mt-3 inline-flex flex-wrap items-center gap-2 rounded-2xl border border-purple-400/15 bg-purple-500/10 px-3 py-2 text-xs">
+                  <span className="text-white/45">Video</span>
+                  <span className={cx("font-medium", getRenderStatusTone(renderJob.status))}>
+                    {getRenderStatusLabel(renderJob.status)}
+                  </span>
+                  <span className="text-white/25">•</span>
+                  <span className="text-white/70">{renderJob.progress ?? 0}%</span>
+                  {renderJob.videoUrl ? (
+                    <>
+                      <span className="text-white/25">•</span>
+                      <a
+                        className="text-purple-200 underline underline-offset-2 hover:opacity-90"
+                        href={renderJob.videoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open video
+                      </a>
+                    </>
+                  ) : null}
+                  {renderJob.error ? (
+                    <>
+                      <span className="text-white/25">•</span>
+                      <span className="text-rose-300">{renderJob.error}</span>
+                    </>
+                  ) : null}
+                </div>
               )}
-              type="button"
-            >
-              Generate Text
-            </button>
+            </div>
 
-            <button
-              onClick={() => void renderVideo()}
-              disabled={rendering || status === "transforming" || status === "offline"}
-              className={cx(
-                "rounded-full px-4 py-2 text-sm font-semibold transition",
-                "border border-purple-400/25 bg-purple-500/20 hover:bg-purple-500/25 text-white",
-                (rendering || status === "transforming" || status === "offline") &&
-                  "opacity-50 cursor-not-allowed"
-              )}
-              type="button"
-            >
-              {rendering ? "Queueing…" : "Render Video"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusPill status={status} label={statusLabel} />
 
-            <button
-              onClick={() => void save({ force: true })}
-              disabled={status === "saving" || status === "transforming" || status === "offline"}
-              className={cx(
-                "rounded-full px-4 py-2 text-sm font-semibold transition",
-                "border border-white/12 bg-white/8 hover:bg-white/12",
-                (status === "saving" || status === "transforming" || status === "offline") &&
-                  "opacity-50 cursor-not-allowed"
-              )}
-              type="button"
-            >
-              Save
-            </button>
+              <button
+                onClick={() => setHistoryOpen(true)}
+                className="rounded-full px-4 py-2 text-sm font-semibold transition border border-white/12 bg-white/5 hover:bg-white/10"
+                type="button"
+              >
+                Version History
+              </button>
+
+              <button
+                onClick={() => void generateScript()}
+                disabled={status === "saving" || status === "transforming" || status === "offline"}
+                className={cx(
+                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  "border border-white/12 bg-white/8 hover:bg-white/12",
+                  (status === "saving" || status === "transforming" || status === "offline") &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+                type="button"
+              >
+                {status === "transforming" ? "Improving…" : "Improve Script"}
+              </button>
+
+              <button
+                onClick={() => void renderVideo()}
+                disabled={rendering || status === "transforming" || status === "offline"}
+                className={cx(
+                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  "border border-purple-400/25 bg-purple-500/20 hover:bg-purple-500/25 text-white",
+                  (rendering || status === "transforming" || status === "offline") &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+                type="button"
+              >
+                {rendering ? "Queueing…" : "Render MP4"}
+              </button>
+
+              <button
+                onClick={() => void save({ force: true })}
+                disabled={status === "saving" || status === "transforming" || status === "offline"}
+                className={cx(
+                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  "border border-white/12 bg-white text-black hover:opacity-90",
+                  (status === "saving" || status === "transforming" || status === "offline") &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+                type="button"
+              >
+                Save Now
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-5 py-8 grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+      <div className="mx-auto max-w-6xl px-5 py-8 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
-          <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
-            <div className="text-sm text-white/70">
-              Script • <span className="text-white/90">{script.language?.toUpperCase?.() ?? ""}</span>{" "}
-              <span className="text-white/30">•</span>{" "}
-              <span className="text-white/50">v{script.version}</span>
+          <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Script</div>
+              <div className="mt-1 text-xs text-white/45">
+                Language:{" "}
+                <span className="text-white/75">{script.language?.toUpperCase?.() ?? "—"}</span>
+                <span className="mx-2 text-white/25">•</span>
+                Version <span className="text-white/75">v{script.version}</span>
+              </div>
             </div>
 
-            <div className="text-xs text-white/40">Tip: Cmd/Ctrl+S</div>
+            <div className="text-xs text-white/40">Tip: Cmd/Ctrl + S</div>
           </div>
 
           {status === "conflict" && conflict && (
             <div className="m-5 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
-              <div className="text-sm font-semibold mb-1">Conflict detectat</div>
+              <div className="text-sm font-semibold mb-1">Conflict detected</div>
               <div className="text-sm text-white/70 mb-3">
-                Alt tab/device a salvat o versiune mai nouă (server v{conflict.serverVersion}).
+                A newer version was saved somewhere else on the server (v{conflict.serverVersion}).
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -1020,7 +1057,7 @@ export default function ScriptEditor({
                   onClick={() => void save({ force: true })}
                   type="button"
                 >
-                  Overwrite (force)
+                  Overwrite server
                 </button>
               </div>
             </div>
@@ -1035,13 +1072,15 @@ export default function ScriptEditor({
               )}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Write your script… (premium, natural, spoken)"
+              placeholder="Write or refine your presenter script..."
             />
 
-            <div className="mt-3 flex items-center justify-between text-xs text-white/40">
+            <div className="mt-3 flex flex-col gap-2 text-xs text-white/40 sm:flex-row sm:items-center sm:justify-between">
               <span>Autosave: {dirty ? "pending" : "ok"}</span>
               <span>
-                {script.updatedAt ? `Last update: ${new Date(script.updatedAt).toLocaleString()}` : ""}
+                {script.updatedAt
+                  ? `Last update: ${new Date(script.updatedAt).toLocaleString()}`
+                  : ""}
               </span>
             </div>
           </div>
@@ -1050,9 +1089,9 @@ export default function ScriptEditor({
         <div className="space-y-6">
           <div className="rounded-3xl border border-white/10 bg-white/[0.04] shadow-[0_20px_80px_rgba(0,0,0,0.55)] overflow-hidden">
             <div className="px-5 py-4 border-b border-white/10">
-              <div className="text-sm font-semibold">Scene / Context</div>
+              <div className="text-sm font-semibold">Context</div>
               <div className="text-xs text-white/50 mt-1">
-                Set the location, domain, and tone. AI becomes more “director-like”.
+                Add business context so the script stays aligned to the message you want.
               </div>
             </div>
 
@@ -1080,22 +1119,36 @@ export default function ScriptEditor({
                 <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Tone</div>
                 <div className="flex flex-wrap gap-2">
                   {["premium", "friendly", "authoritative", "cinematic"].map((t) => (
-                    <Chip key={t} active={ctx.tone === t} onClick={() => setCtx((p) => ({ ...p, tone: t }))} text={t} />
+                    <Chip
+                      key={t}
+                      active={ctx.tone === t}
+                      onClick={() => setCtx((p) => ({ ...p, tone: t }))}
+                      text={t}
+                    />
                   ))}
                 </div>
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Visual vibe</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Visual vibe
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {["apple-cinematic", "ultra-minimal", "dark-studio"].map((v) => (
-                    <Chip key={v} active={ctx.visual === v} onClick={() => setCtx((p) => ({ ...p, visual: v }))} text={v} />
+                    <Chip
+                      key={v}
+                      active={ctx.visual === v}
+                      onClick={() => setCtx((p) => ({ ...p, visual: v }))}
+                      text={v}
+                    />
                   ))}
                 </div>
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Notes (optional)</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Notes (optional)
+                </div>
                 <textarea
                   className="w-full rounded-2xl border border-white/10 bg-neutral-950/40 p-4 outline-none min-h-[110px] focus:border-white/20 focus:bg-neutral-950/55 transition"
                   value={ctx.notes}
@@ -1104,13 +1157,18 @@ export default function ScriptEditor({
                 />
               </div>
 
-              <div className="text-xs text-white/45">{ctxDirty ? "Saving context…" : "Context up to date"}</div>
+              <div className="text-xs text-white/45">
+                {ctxDirty ? "Saving context..." : "Context up to date"}
+              </div>
 
               <div className="pt-2">
                 <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
-                  <div className="text-xs uppercase tracking-widest text-white/50 mb-2">AI highlight</div>
+                  <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                    Why this matters
+                  </div>
                   <div className="text-sm text-white/75 leading-relaxed">
-                    Use context as “set & direction”. When you regenerate, the prompt stays consistent and cinematic.
+                    Context helps the generated script stay consistent with your business message,
+                    audience, and delivery style.
                   </div>
                 </div>
               </div>
@@ -1121,7 +1179,7 @@ export default function ScriptEditor({
             <div className="px-5 py-4 border-b border-white/10">
               <div className="text-sm font-semibold">Video Direction</div>
               <div className="text-xs text-white/50 mt-1">
-                Set how the final spokesperson should feel on screen.
+                Set how the final presenter should feel on screen.
               </div>
             </div>
 
@@ -1150,7 +1208,9 @@ export default function ScriptEditor({
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Delivery</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Delivery
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { value: "calm", label: "Calm" },
@@ -1174,7 +1234,9 @@ export default function ScriptEditor({
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Movement</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Movement
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { value: "static", label: "Static" },
@@ -1197,7 +1259,9 @@ export default function ScriptEditor({
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Background</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Background
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { value: "studio", label: "Studio" },
@@ -1221,10 +1285,12 @@ export default function ScriptEditor({
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Current direction</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Current direction
+                </div>
                 <div className="text-sm text-white/75 leading-relaxed">
-                  {ctx.videoDirection.shot}, {ctx.videoDirection.delivery}, {ctx.videoDirection.movement},{" "}
-                  {ctx.videoDirection.background}
+                  {ctx.videoDirection.shot}, {ctx.videoDirection.delivery},{" "}
+                  {ctx.videoDirection.movement}, {ctx.videoDirection.background}
                 </div>
               </div>
             </div>
@@ -1240,7 +1306,9 @@ export default function ScriptEditor({
 
             <div className="p-5 space-y-5">
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Voice Gender</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Voice Gender
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { value: "auto", label: "Auto" },
@@ -1263,7 +1331,9 @@ export default function ScriptEditor({
               </div>
 
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Voice Preset</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Voice Preset
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { value: "auto", label: "Auto" },
@@ -1289,9 +1359,12 @@ export default function ScriptEditor({
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Current voice profile</div>
+                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                  Current voice profile
+                </div>
                 <div className="text-sm text-white/75 leading-relaxed">
-                  Gender: {ctx.voiceProfile.genderPreference} • Preset: {getVoicePresetLabel(ctx.voiceProfile.preset)}
+                  Gender: {ctx.voiceProfile.genderPreference} • Preset:{" "}
+                  {getVoicePresetLabel(ctx.voiceProfile.preset)}
                 </div>
               </div>
             </div>
@@ -1301,13 +1374,18 @@ export default function ScriptEditor({
 
       {historyOpen && (
         <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setHistoryOpen(false)} />
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setHistoryOpen(false)}
+          />
 
           <div className="absolute right-0 top-0 h-full w-full lg:w-[920px] border-l border-white/10 bg-neutral-950/85 backdrop-blur-xl shadow-[0_30px_120px_rgba(0,0,0,0.7)]">
             <div className="p-5 border-b border-white/10 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-sm font-semibold">Version History</div>
-                <div className="text-xs text-white/50 mt-1">Click a version for preview. Restore requires confirmation.</div>
+                <div className="text-xs text-white/50 mt-1">
+                  Select a version to preview it. Restore always asks for confirmation.
+                </div>
               </div>
 
               <div className="flex items-center gap-2">
@@ -1317,7 +1395,7 @@ export default function ScriptEditor({
                   type="button"
                   disabled={status === "offline" || !presenterId}
                 >
-                  Save snapshot
+                  Save Snapshot
                 </button>
 
                 <button
@@ -1359,16 +1437,23 @@ export default function ScriptEditor({
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <div className="text-sm font-semibold">
-                                  v{v.version} <span className="text-white/40 font-normal">• {v.source}</span>
+                                  v{v.version}{" "}
+                                  <span className="text-white/40 font-normal">• {v.source}</span>
                                 </div>
-                                <div className="text-xs text-white/50 mt-1">{new Date(v.created_at).toLocaleString()}</div>
+                                <div className="text-xs text-white/50 mt-1">
+                                  {new Date(v.created_at).toLocaleString()}
+                                </div>
 
                                 {v?.meta?.reason && (
-                                  <div className="text-xs text-white/45 mt-1">reason: {String(v.meta.reason)}</div>
+                                  <div className="text-xs text-white/45 mt-1">
+                                    reason: {String(v.meta.reason)}
+                                  </div>
                                 )}
 
                                 {String(v?.meta?.reason) === "restore" && v?.meta?.from_version && (
-                                  <div className="text-xs text-white/45 mt-1">restored from v{String(v.meta.from_version)}</div>
+                                  <div className="text-xs text-white/45 mt-1">
+                                    restored from v{String(v.meta.from_version)}
+                                  </div>
                                 )}
                               </div>
 
@@ -1376,7 +1461,9 @@ export default function ScriptEditor({
                                 <span
                                   className={cx(
                                     "inline-flex items-center rounded-full px-2 py-1 text-[11px] border",
-                                    active ? "border-white/20 text-white/70" : "border-white/10 text-white/50"
+                                    active
+                                      ? "border-white/20 text-white/70"
+                                      : "border-white/10 text-white/50"
                                   )}
                                 >
                                   select
@@ -1400,9 +1487,12 @@ export default function ScriptEditor({
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
                           <div className="text-sm font-semibold">
-                            Preview v{selected.version} <span className="text-white/40 font-normal">• {selected.source}</span>
+                            Preview v{selected.version}{" "}
+                            <span className="text-white/40 font-normal">• {selected.source}</span>
                           </div>
-                          <div className="text-xs text-white/50 mt-1">{new Date(selected.created_at).toLocaleString()}</div>
+                          <div className="text-xs text-white/50 mt-1">
+                            {new Date(selected.created_at).toLocaleString()}
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -1412,7 +1502,9 @@ export default function ScriptEditor({
                               onClick={() => setPreviewMode("preview")}
                               className={cx(
                                 "px-3 py-2 text-xs font-semibold rounded-full transition",
-                                previewMode === "preview" ? "bg-white text-black" : "text-white/70 hover:bg-white/10"
+                                previewMode === "preview"
+                                  ? "bg-white text-black"
+                                  : "text-white/70 hover:bg-white/10"
                               )}
                             >
                               Preview
@@ -1422,7 +1514,9 @@ export default function ScriptEditor({
                               onClick={() => setPreviewMode("diff")}
                               className={cx(
                                 "px-3 py-2 text-xs font-semibold rounded-full transition",
-                                previewMode === "diff" ? "bg-white text-black" : "text-white/70 hover:bg-white/10"
+                                previewMode === "diff"
+                                  ? "bg-white text-black"
+                                  : "text-white/70 hover:bg-white/10"
                               )}
                             >
                               Diff
@@ -1432,11 +1526,15 @@ export default function ScriptEditor({
                           <button
                             type="button"
                             disabled={restoreBusyId === selected.id || status === "offline" || !presenterId}
-                            onClick={() => setConfirm({ versionId: selected.id, version: selected.version })}
+                            onClick={() =>
+                              setConfirm({ versionId: selected.id, version: selected.version })
+                            }
                             className={cx(
                               "rounded-full px-4 py-2 text-sm font-semibold transition border",
                               "border-white/12 bg-white/8 hover:bg-white/12",
-                              (restoreBusyId === selected.id || status === "offline" || !presenterId) &&
+                              (restoreBusyId === selected.id ||
+                                status === "offline" ||
+                                !presenterId) &&
                                 "opacity-50 cursor-not-allowed"
                             )}
                           >
@@ -1448,7 +1546,9 @@ export default function ScriptEditor({
                       <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.04] overflow-hidden">
                         <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
                           <div className="text-xs uppercase tracking-widest text-white/50">
-                            {previewMode === "preview" ? "Preview content" : "Diff vs current draft"}
+                            {previewMode === "preview"
+                              ? "Preview content"
+                              : "Diff vs current draft"}
                           </div>
                           <div className="text-xs text-white/40">
                             {previewMode === "diff"
@@ -1466,13 +1566,17 @@ export default function ScriptEditor({
                             previewLoading ? (
                               <div className="text-sm text-white/60">Loading preview…</div>
                             ) : previewText ? (
-                              <pre className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">{previewText}</pre>
+                              <pre className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">
+                                {previewText}
+                              </pre>
                             ) : (
                               <div className="text-sm text-white/60">
                                 {previewError ? (
                                   <>
                                     Couldn’t load preview.
-                                    <div className="mt-2 text-xs text-white/45 break-words">{previewError}</div>
+                                    <div className="mt-2 text-xs text-white/45 break-words">
+                                      {previewError}
+                                    </div>
                                   </>
                                 ) : (
                                   "Preview unavailable (endpoint didn’t return content)."
@@ -1482,11 +1586,15 @@ export default function ScriptEditor({
                           ) : (
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                               <div className="rounded-2xl border border-white/10 bg-neutral-950/40 p-4">
-                                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Current draft</div>
+                                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                                  Current draft
+                                </div>
                                 <DiffBlock rows={diffRows} side="left" />
                               </div>
                               <div className="rounded-2xl border border-white/10 bg-neutral-950/40 p-4">
-                                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">Selected version</div>
+                                <div className="text-xs uppercase tracking-widest text-white/50 mb-2">
+                                  Selected version
+                                </div>
                                 <DiffBlock rows={diffRows} side="right" />
                               </div>
                             </div>
@@ -1495,7 +1603,7 @@ export default function ScriptEditor({
                       </div>
 
                       <div className="mt-4 text-xs text-white/45">
-                        Tip: Restore creates a new version (safety net). Snapshot = manual checkpoint.
+                        Restore always creates a new version. Snapshot works as a manual checkpoint.
                       </div>
                     </>
                   )}
@@ -1505,7 +1613,10 @@ export default function ScriptEditor({
 
             {confirm && (
               <div className="fixed inset-0 z-[60]">
-                <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={() => setConfirm(null)} />
+                <div
+                  className="absolute inset-0 bg-black/65 backdrop-blur-sm"
+                  onClick={() => setConfirm(null)}
+                />
                 <div className="absolute left-1/2 top-1/2 w-[92%] max-w-md -translate-x-1/2 -translate-y-1/2">
                   <div className="rounded-3xl border border-white/10 bg-neutral-950/90 backdrop-blur-xl shadow-[0_30px_120px_rgba(0,0,0,0.7)] overflow-hidden">
                     <div className="p-5 border-b border-white/10">
@@ -1535,7 +1646,9 @@ export default function ScriptEditor({
                         className={cx(
                           "rounded-full px-4 py-2 text-sm font-semibold border transition",
                           "border-white/12 bg-white text-black hover:opacity-90",
-                          (restoreBusyId === confirm.versionId || status === "offline" || !presenterId) &&
+                          (restoreBusyId === confirm.versionId ||
+                            status === "offline" ||
+                            !presenterId) &&
                             "opacity-60 cursor-not-allowed"
                         )}
                       >
@@ -1608,13 +1721,23 @@ function Field({
   );
 }
 
-function Chip({ text, active, onClick }: { text: string; active: boolean; onClick: () => void }) {
+function Chip({
+  text,
+  active,
+  onClick,
+}: {
+  text: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       onClick={onClick}
       className={cx(
         "rounded-full px-3 py-2 text-xs font-semibold transition border",
-        active ? "bg-white text-black border-white" : "border-white/12 bg-white/5 text-white/70 hover:bg-white/10"
+        active
+          ? "bg-white text-black border-white"
+          : "border-white/12 bg-white/5 text-white/70 hover:bg-white/10"
       )}
       type="button"
     >
@@ -1638,8 +1761,12 @@ function DiffBlock({
         const changed = r.changed;
         return (
           <div key={r.i} className={cx("px-2 py-0.5 rounded-md", changed ? "bg-white/5" : "")}>
-            <span className="text-white/30 select-none mr-2">{String(r.i + 1).padStart(3, " ")}</span>
-            <span className={cx(changed ? "text-white/85" : "text-white/55")}>{show.length ? show : " "}</span>
+            <span className="text-white/30 select-none mr-2">
+              {String(r.i + 1).padStart(3, " ")}
+            </span>
+            <span className={cx(changed ? "text-white/85" : "text-white/55")}>
+              {show.length ? show : " "}
+            </span>
           </div>
         );
       })}
