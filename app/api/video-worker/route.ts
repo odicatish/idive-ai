@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { generateVoiceoverForJob } from "../../../lib/video/generateVoiceover";
+import { renderMp4ForJob } from "../../../lib/video/renderMp4";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,16 +64,6 @@ function supabaseAdminSafe() {
   });
 
   return { ok: true as const, client };
-}
-
-function extractSignedUrl(vo: any): string | null {
-  if (!vo) return null;
-  if (typeof vo === "string") return vo;
-  if (typeof vo?.signedUrl === "string") return vo.signedUrl;
-  if (typeof vo?.voiceUrl === "string") return vo.voiceUrl;
-  if (typeof vo?.url === "string") return vo.url;
-  if (typeof vo?.audioUrl === "string") return vo.audioUrl;
-  return null;
 }
 
 async function ensurePipelineJobForLegacyJob(supabase: any, legacyJob: any) {
@@ -137,48 +128,6 @@ async function getFreshSignedAudioUrl(supabase: any, pipelineJobId: string) {
   return { ok: true as const, audioUrl: (asset.public_url ?? null) as string | null };
 }
 
-async function renderMp4ViaRailway(pipelineJobId: string, audioUrl: string) {
-  const base = (process.env.VIDEO_RENDERER_URL || "").trim();
-  const secret = (process.env.VIDEO_RENDERER_SECRET || "").trim();
-  if (!base || !secret) {
-    return { ok: false as const, reason: "missing_VIDEO_RENDERER_URL_or_SECRET" };
-  }
-
-  const endpoint = `${base.replace(/\/$/, "")}/render-mp4`;
-
-  const r = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${secret}`,
-    },
-    body: JSON.stringify({
-      jobId: pipelineJobId,
-      audioUrl,
-      output: { bucket: "renders", path: `videos/${pipelineJobId}.mp4` },
-    }),
-  });
-
-  const txt = await r.text().catch(() => "");
-  let json: any = null;
-  try {
-    json = txt ? JSON.parse(txt) : null;
-  } catch {
-    json = { raw: txt };
-  }
-
-  if (!r.ok) {
-    return {
-      ok: false as const,
-      reason: "railway_render_failed",
-      status: r.status,
-      response: json,
-    };
-  }
-
-  return { ok: true as const, mp4Url: json?.mp4Url ?? null, response: json };
-}
-
 async function legacyHasMp4Asset(supabase: any, pipelineJobId: string) {
   const { data } = await supabase
     .from("video_assets")
@@ -191,6 +140,56 @@ async function legacyHasMp4Asset(supabase: any, pipelineJobId: string) {
   return Array.isArray(data) && data.length > 0;
 }
 
+function getErrorMessage(e: any) {
+  return typeof e?.message === "string" && e.message.trim()
+    ? e.message.trim()
+    : String(e ?? "unknown_error");
+}
+
+async function updatePipelineJob(
+  supabase: any,
+  pipelineJobId: string,
+  patch: Record<string, any>
+) {
+  try {
+    await supabase
+      .from("video_render_jobs")
+      .update({
+        ...patch,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", pipelineJobId);
+  } catch {}
+}
+
+async function updateLegacyJob(
+  supabase: any,
+  legacyJobId: string,
+  patch: Record<string, any>
+) {
+  await supabase
+    .from("presenter_video_jobs")
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", legacyJobId);
+}
+
+async function ensureVoiceoverExists(supabase: any, pipelineJobId: string) {
+  const existing = await getFreshSignedAudioUrl(supabase, pipelineJobId);
+  if (existing.ok && existing.audioUrl) return existing.audioUrl;
+
+  await generateVoiceoverForJob(pipelineJobId);
+
+  const after = await getFreshSignedAudioUrl(supabase, pipelineJobId);
+  if (!after.ok || !after.audioUrl) {
+    throw new Error("voiceover_missing_after_generation");
+  }
+
+  return after.audioUrl;
+}
+
 async function mp4OnlyForLegacyJob(supabase: any, legacyJob: any) {
   const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, legacyJob);
 
@@ -199,40 +198,49 @@ async function mp4OnlyForLegacyJob(supabase: any, legacyJob: any) {
     return { didWork: false as const, reason: "mp4_already_exists", pipelineJobId };
   }
 
-  let audio = await getFreshSignedAudioUrl(supabase, pipelineJobId);
+  await updatePipelineJob(supabase, pipelineJobId, {
+    status: "processing",
+    progress: 65,
+    error: null,
+  });
 
-  if (!audio.ok || !audio.audioUrl) {
-    const vo = await generateVoiceoverForJob(pipelineJobId);
-    const signedUrl = extractSignedUrl(vo);
-    if (!signedUrl) throw new Error("voiceover_missing_and_could_not_generate");
-    audio = { ok: true as const, audioUrl: signedUrl };
-  }
+  await ensureVoiceoverExists(supabase, pipelineJobId);
 
-  const mp4 = await renderMp4ViaRailway(pipelineJobId, audio.audioUrl!);
-  if (!mp4.ok) {
-    return { didWork: false as const, reason: "mp4_render_failed", pipelineJobId, mp4Debug: mp4 };
-  }
-
-  const mp4Url = mp4.mp4Url ?? null;
-
-  await supabase
-    .from("presenter_video_jobs")
-    .update({
-      video_url: mp4Url ?? legacyJob.video_url,
-      provider: "ffmpeg-worker",
-      provider_job_id: pipelineJobId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", legacyJob.id);
+  let mp4Url: string | null = null;
 
   try {
-    await supabase
-      .from("video_render_jobs")
-      .update({ video_url: mp4Url, updated_at: new Date().toISOString() })
-      .eq("id", pipelineJobId);
-  } catch {}
+    mp4Url = await renderMp4ForJob(pipelineJobId);
+    if (!mp4Url) throw new Error("mp4_url_missing_after_render");
+  } catch (e: any) {
+    const message = getErrorMessage(e);
 
-  return { didWork: true as const, pipelineJobId, mp4Url, mp4Debug: mp4 };
+    await updatePipelineJob(supabase, pipelineJobId, {
+      status: "failed",
+      error: message,
+    });
+
+    return {
+      didWork: false as const,
+      reason: "mp4_render_failed",
+      pipelineJobId,
+      error: message,
+    };
+  }
+
+  await updateLegacyJob(supabase, legacyJob.id, {
+    provider: "ffmpeg-worker",
+    provider_job_id: pipelineJobId,
+    video_url: mp4Url,
+  });
+
+  await updatePipelineJob(supabase, pipelineJobId, {
+    status: "completed",
+    progress: 100,
+    video_url: mp4Url,
+    error: null,
+  });
+
+  return { didWork: true as const, pipelineJobId, mp4Url };
 }
 
 async function processLegacyJobQueued(supabase: any, legacyJobId: string) {
@@ -263,37 +271,80 @@ async function processLegacyJobQueued(supabase: any, legacyJobId: string) {
   if (!locked) return { didWork: false as const, reason: "legacy_not_queued_anymore" };
 
   const pipelineJobId = await ensurePipelineJobForLegacyJob(supabase, locked);
-  const vo = await generateVoiceoverForJob(pipelineJobId);
-  const signedUrl = extractSignedUrl(vo);
 
-  let mp4Url: string | null = null;
-  let mp4Debug: any = null;
-  if (signedUrl) {
-    const mp4 = await renderMp4ViaRailway(pipelineJobId, signedUrl);
-    mp4Debug = mp4;
-    if (mp4.ok && mp4.mp4Url) mp4Url = mp4.mp4Url;
-  }
+  try {
+    await updatePipelineJob(supabase, pipelineJobId, {
+      status: "processing",
+      progress: 10,
+      error: null,
+    });
 
-  await supabase
-    .from("presenter_video_jobs")
-    .update({
+    await updateLegacyJob(supabase, legacyJobId, {
+      status: "processing",
+      progress: 25,
+      error: null,
+    });
+
+    await ensureVoiceoverExists(supabase, pipelineJobId);
+
+    await updatePipelineJob(supabase, pipelineJobId, {
+      status: "processing",
+      progress: 60,
+      error: null,
+    });
+
+    await updateLegacyJob(supabase, legacyJobId, {
+      status: "processing",
+      progress: 70,
+      error: null,
+    });
+
+    const mp4Url = await renderMp4ForJob(pipelineJobId);
+    if (!mp4Url) throw new Error("mp4_url_missing_after_render");
+
+    await updateLegacyJob(supabase, legacyJobId, {
       status: "completed",
       progress: 100,
-      provider: mp4Url ? "ffmpeg-worker" : "openai-tts-mvp",
+      provider: "ffmpeg-worker",
       provider_job_id: pipelineJobId,
-      video_url: mp4Url ?? signedUrl,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", legacyJobId);
+      video_url: mp4Url,
+      error: null,
+    });
 
-  return {
-    didWork: true as const,
-    legacyJobId,
-    pipelineJobId,
-    voiceUrl: signedUrl,
-    mp4Url,
-    mp4Debug,
-  };
+    await updatePipelineJob(supabase, pipelineJobId, {
+      status: "completed",
+      progress: 100,
+      video_url: mp4Url,
+      error: null,
+    });
+
+    return {
+      didWork: true as const,
+      legacyJobId,
+      pipelineJobId,
+      mp4Url,
+    };
+  } catch (e: any) {
+    const message = getErrorMessage(e);
+
+    await updateLegacyJob(supabase, legacyJobId, {
+      status: "failed",
+      progress: 100,
+      provider: "ffmpeg-worker",
+      provider_job_id: pipelineJobId,
+      video_url: null,
+      error: message,
+    });
+
+    await updatePipelineJob(supabase, pipelineJobId, {
+      status: "failed",
+      progress: 100,
+      video_url: null,
+      error: message,
+    });
+
+    throw new Error(`queued_render_failed: ${message}`);
+  }
 }
 
 export async function GET(req: Request) {
@@ -348,7 +399,12 @@ export async function POST(req: Request) {
       }
 
       const out = await mp4OnlyForLegacyJob(supabase, legacy);
-      return NextResponse.json({ ok: true, ...out, legacyJobId: jobId, ran: "mp4_only_by_jobId" });
+      return NextResponse.json({
+        ok: true,
+        ...out,
+        legacyJobId: jobId,
+        ran: "mp4_only_by_jobId",
+      });
     }
 
     const { data: queued, error: pickErr } = await supabase
@@ -384,7 +440,12 @@ export async function POST(req: Request) {
     }
 
     const out = await mp4OnlyForLegacyJob(supabase, latest);
-    return NextResponse.json({ ok: true, ...out, legacyJobId: latest.id, ran: "mp4_only_latest_completed" });
+    return NextResponse.json({
+      ok: true,
+      ...out,
+      legacyJobId: latest.id,
+      ran: "mp4_only_latest_completed",
+    });
   } catch (e: any) {
     console.error("VIDEO_WORKER_ERROR", e);
     return jsonError(500, "internal_error", e?.message ?? String(e));
