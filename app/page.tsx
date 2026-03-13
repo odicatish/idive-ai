@@ -25,114 +25,130 @@ const USE_CASES = [
 
 const BENEFITS = [
   {
-    title: "Built for business communication",
+    title: "Built for real business video",
     description:
-      "iDive AI is designed for real business use cases, not generic avatar demos.",
+      "iDive AI is designed for websites, product demos, outreach, and founder communication — not generic avatar demos.",
   },
   {
-    title: "Script, presenter, voice, and render",
+    title: "Presenter, script, voice, and render",
     description:
-      "Generate the presenter, write the message, refine it in Studio, and render the final MP4 in one flow.",
+      "Generate the presenter, create the message, refine it in Studio, and export the final MP4 in one workflow.",
   },
   {
-    title: "Simple workflow",
+    title: "Fast enough for teams",
     description:
-      "No filming, no editing software, and no complicated production process.",
+      "No camera setup, no editing toolchain, and no long production cycle just to publish one video.",
   },
 ];
 
 const STEPS = [
   {
     step: "01",
-    title: "Choose your video type",
+    title: "Choose a business use case",
     description:
-      "Select the business use case that best matches the message you want to create.",
+      "Pick the kind of video you want to create: spokesperson, outreach, founder message, or explainer.",
   },
   {
     step: "02",
-    title: "Generate presenter and script",
+    title: "Generate your presenter",
     description:
-      "Create an AI presenter with image, identity, and a first version of your script.",
+      "Create a business-ready AI presenter with the right look, identity, and direction.",
   },
   {
     step: "03",
-    title: "Edit in Studio",
+    title: "Refine in Studio",
     description:
-      "Refine the message, adjust direction, and customize context, voice, and delivery.",
+      "Edit the script, adjust context, tune voice and direction, and prepare the final message.",
   },
   {
     step: "04",
-    title: "Render your final MP4",
+    title: "Render and publish",
     description:
-      "Export the final presenter video ready for your website, campaigns, or outreach.",
+      "Export the final MP4 and use it on your landing page, in campaigns, or in outreach.",
   },
+];
+
+const SOCIAL_PROOF = [
+  "Landing page videos",
+  "Product explainers",
+  "Founder updates",
+  "Sales outreach clips",
 ];
 
 export default function Home() {
   return (
     <main className="min-h-screen bg-black text-white">
-      <section className="px-6 pt-10 pb-20">
+      <section className="px-6 pt-8 pb-20">
         <div className="mx-auto max-w-6xl">
           <div className="flex items-center justify-between gap-4">
             <div className="inline-flex items-center rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
               iDive AI
             </div>
 
-            <Link
-              href="/create"
-              className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-            >
-              Create Presenter
-            </Link>
-          </div>
-
-          <div className="mx-auto max-w-4xl text-center pt-20">
-            <h1 className="text-5xl md:text-7xl font-semibold tracking-tight leading-[1.02]">
-              Your AI business spokesperson for high-conversion video communication.
-            </h1>
-
-            <p className="mt-8 text-lg md:text-xl text-neutral-400 leading-8 max-w-3xl mx-auto">
-              Create polished presenter-led business videos for websites, product explainers,
-              founder messages, and sales outreach — with AI-generated presenters, scripts,
-              voice, and final MP4 render.
-            </p>
-
-            <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+            <div className="flex items-center gap-3">
               <Link
                 href="/create"
-                className="w-full sm:w-auto rounded-2xl bg-white px-8 py-4 text-black text-lg font-semibold transition hover:opacity-95"
+                className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
               >
-                Create your AI presenter
+                Create Presenter
+              </Link>
+            </div>
+          </div>
+
+          <div className="mx-auto max-w-5xl pt-20 text-center">
+            <div className="inline-flex items-center rounded-full border border-purple-400/20 bg-purple-500/10 px-4 py-2 text-xs font-medium text-purple-200">
+              AI presenter videos for business communication
+            </div>
+
+            <h1 className="mt-8 text-5xl font-semibold leading-[1.02] tracking-tight md:text-7xl">
+              Create business videos with an AI presenter that actually feels usable.
+            </h1>
+
+            <p className="mx-auto mt-8 max-w-3xl text-lg leading-8 text-neutral-400 md:text-xl">
+              Generate polished presenter-led videos for websites, product explainers, founder
+              updates, and sales outreach — with AI-generated presenter, script, voice, and final
+              MP4 render in one workflow.
+            </p>
+
+            <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+              <Link
+                href="/create"
+                className="w-full rounded-2xl bg-white px-8 py-4 text-lg font-semibold text-black transition hover:opacity-95 sm:w-auto"
+              >
+                Create your first presenter
               </Link>
 
               <a
-                href="#how-it-works"
-                className="w-full sm:w-auto rounded-2xl border border-white/12 bg-white/5 px-8 py-4 text-lg font-semibold text-white transition hover:bg-white/10"
+                href="#pricing-preview"
+                className="w-full rounded-2xl border border-white/12 bg-white/5 px-8 py-4 text-lg font-semibold text-white transition hover:bg-white/10 sm:w-auto"
               >
-                See how it works
+                See plans
               </a>
             </div>
 
-            <div className="mt-16 grid gap-4 md:grid-cols-3 text-left">
+            <div className="mt-12 text-sm text-neutral-500">
+              Free plan available • 1 video / month • upgrade when you need more
+            </div>
+
+            <div className="mt-16 grid gap-4 text-left md:grid-cols-3">
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950/70 p-5">
-                <div className="text-sm font-medium text-white">Built for business use cases</div>
+                <div className="text-sm font-medium text-white">Business-first outputs</div>
                 <div className="mt-2 text-sm leading-6 text-neutral-400">
-                  Presenter-led videos for websites, outreach, explainers, and leadership
-                  communication.
+                  Built for teams that need clear spokesperson, product, and outreach videos.
                 </div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950/70 p-5">
-                <div className="text-sm font-medium text-white">One simple workflow</div>
+                <div className="text-sm font-medium text-white">Fast creation workflow</div>
                 <div className="mt-2 text-sm leading-6 text-neutral-400">
-                  Generate presenter, script, voice, and final MP4 without switching tools.
+                  Go from idea to presenter video without filming or editing software.
                 </div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950/70 p-5">
-                <div className="text-sm font-medium text-white">More useful than avatar demos</div>
+                <div className="text-sm font-medium text-white">Made to convert</div>
                 <div className="mt-2 text-sm leading-6 text-neutral-400">
-                  Designed to create clear, credible business videos — not generic talking heads.
+                  Use AI presenter videos where they matter most: landing pages, demos, and sales.
                 </div>
               </div>
             </div>
@@ -140,27 +156,35 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="border-t border-white/6 px-6 py-20">
+      <section className="border-y border-white/6 px-6 py-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-neutral-500">
+          {SOCIAL_PROOF.map((item) => (
+            <div key={item}>{item}</div>
+          ))}
+        </div>
+      </section>
+
+      <section className="px-6 py-20">
         <div className="mx-auto max-w-6xl grid gap-10 lg:grid-cols-[0.9fr_1.1fr] items-start">
           <div>
             <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">The problem</div>
-            <h2 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight">
-              Business video is powerful — but hard to produce.
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Business video works, but production is still too slow.
             </h2>
           </div>
 
-          <div className="space-y-5 text-neutral-400 text-lg leading-8">
+          <div className="space-y-5 text-lg leading-8 text-neutral-400">
             <p>
-              Creating professional presenter videos usually means cameras, editing, voiceover,
-              and time-consuming production work.
+              Most teams know video improves clarity, trust, and conversion — but creating one good
+              presenter video still takes too much time.
             </p>
             <p>
-              Most AI avatar tools do not really solve this either. They often feel generic,
-              robotic, or disconnected from real business communication needs.
+              Traditional production means cameras, editing, voiceover, revisions, and delays.
+              Generic avatar tools often solve speed, but not quality or credibility.
             </p>
             <p>
-              Teams still need a faster way to create clear, credible video messages that are
-              actually useful in marketing, sales, and product communication.
+              iDive AI sits in the middle: faster than production, more useful than a generic
+              talking-head demo.
             </p>
           </div>
         </div>
@@ -170,13 +194,13 @@ export default function Home() {
         <div className="mx-auto max-w-6xl">
           <div className="max-w-3xl">
             <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">The solution</div>
-            <h2 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight">
-              Create presenter-led business videos in one simple flow.
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Create presenter-led business videos in one focused workflow.
             </h2>
             <p className="mt-6 text-lg leading-8 text-neutral-400">
-              iDive AI helps you create polished presenter videos built for real communication use
-              cases — not generic avatar demos. Generate your presenter, write the script, refine
-              the message, and render the final video in minutes.
+              iDive AI helps you create business-ready presenter videos from a single interface.
+              Generate the presenter, create or refine the script, set the voice and direction, and
+              render the final MP4 in minutes.
             </p>
           </div>
 
@@ -198,7 +222,7 @@ export default function Home() {
         <div className="mx-auto max-w-6xl">
           <div className="max-w-3xl">
             <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">Use cases</div>
-            <h2 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight">
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
               Built for the business videos teams actually need.
             </h2>
           </div>
@@ -223,7 +247,7 @@ export default function Home() {
             <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">
               How it works
             </div>
-            <h2 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight">
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
               From idea to final MP4 in four steps.
             </h2>
           </div>
@@ -243,24 +267,110 @@ export default function Home() {
         </div>
       </section>
 
+      <section id="pricing-preview" className="border-t border-white/6 px-6 py-20">
+        <div className="mx-auto max-w-6xl">
+          <div className="max-w-3xl">
+            <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">
+              Pricing preview
+            </div>
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Start free, upgrade when your video volume grows.
+            </h2>
+            <p className="mt-6 text-lg leading-8 text-neutral-400">
+              The free plan is enough to try the workflow. Pro is the best fit for most solo
+              founders, marketers, and small teams. Business is for heavier monthly usage.
+            </p>
+          </div>
+
+          <div className="mt-12 grid gap-4 lg:grid-cols-3">
+            <div className="rounded-3xl border border-neutral-800 bg-neutral-950 p-6">
+              <div className="text-sm font-semibold text-white">Free</div>
+              <div className="mt-3 text-4xl font-semibold tracking-tight">$0</div>
+              <div className="mt-1 text-sm text-neutral-500">per month</div>
+
+              <div className="mt-6 space-y-2 text-sm text-neutral-300">
+                <div>1 video / month</div>
+                <div>Try the full workflow</div>
+                <div>Best for first-time users</div>
+              </div>
+
+              <Link
+                href="/create"
+                className="mt-8 inline-flex w-full items-center justify-center rounded-2xl border border-white/12 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Start free
+              </Link>
+            </div>
+
+            <div className="rounded-3xl border border-white/12 bg-white/[0.06] p-6 shadow-[0_20px_80px_rgba(255,255,255,0.04)]">
+              <div className="inline-flex rounded-full border border-purple-400/20 bg-purple-500/10 px-3 py-1 text-xs font-medium text-purple-200">
+                Most popular
+              </div>
+              <div className="mt-4 text-sm font-semibold text-white">Pro</div>
+              <div className="mt-3 text-4xl font-semibold tracking-tight">$29</div>
+              <div className="mt-1 text-sm text-neutral-500">per month</div>
+
+              <div className="mt-6 space-y-2 text-sm text-neutral-300">
+                <div>20 videos / month</div>
+                <div>Best value for regular usage</div>
+                <div>Great for founders and marketers</div>
+              </div>
+
+              <Link
+                href="/create"
+                className="mt-8 inline-flex w-full items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition hover:opacity-95"
+              >
+                Start with Pro
+              </Link>
+            </div>
+
+            <div className="rounded-3xl border border-purple-400/20 bg-purple-500/10 p-6">
+              <div className="text-sm font-semibold text-purple-100">Business</div>
+              <div className="mt-3 text-4xl font-semibold tracking-tight">$79</div>
+              <div className="mt-1 text-sm text-neutral-300">per month</div>
+
+              <div className="mt-6 space-y-2 text-sm text-neutral-200">
+                <div>60 videos / month</div>
+                <div>Higher monthly capacity</div>
+                <div>Best for teams and heavier workflows</div>
+              </div>
+
+              <Link
+                href="/create"
+                className="mt-8 inline-flex w-full items-center justify-center rounded-2xl border border-purple-400/25 bg-purple-500/20 px-4 py-3 text-sm font-semibold text-white transition hover:bg-purple-500/25"
+              >
+                Choose Business
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="border-t border-white/6 px-6 py-20">
-        <div className="mx-auto max-w-5xl rounded-[32px] border border-neutral-800 bg-neutral-950 px-8 py-12 md:px-12 md:py-16 text-center">
+        <div className="mx-auto max-w-5xl rounded-[32px] border border-neutral-800 bg-neutral-950 px-8 py-12 text-center md:px-12 md:py-16">
           <div className="text-sm uppercase tracking-[0.22em] text-neutral-500">Final CTA</div>
-          <h2 className="mt-4 text-3xl md:text-5xl font-semibold tracking-tight">
-            Create your first AI presenter video.
+          <h2 className="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">
+            Create your first AI business presenter video.
           </h2>
-          <p className="mt-6 max-w-2xl mx-auto text-lg leading-8 text-neutral-400">
-            Generate a business presenter, refine the message, and render your final video in one
-            simple workflow.
+          <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-neutral-400">
+            Generate a presenter, refine the message in Studio, and export a final video ready for
+            your site, product, or campaigns.
           </p>
 
-          <div className="mt-10">
+          <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link
               href="/create"
-              className="inline-flex rounded-2xl bg-white px-8 py-4 text-black text-lg font-semibold transition hover:opacity-95"
+              className="inline-flex rounded-2xl bg-white px-8 py-4 text-lg font-semibold text-black transition hover:opacity-95"
             >
               Create your AI presenter
             </Link>
+
+            <a
+              href="#pricing-preview"
+              className="inline-flex rounded-2xl border border-white/12 bg-white/5 px-8 py-4 text-lg font-semibold text-white transition hover:bg-white/10"
+            >
+              Compare plans
+            </a>
           </div>
         </div>
       </section>

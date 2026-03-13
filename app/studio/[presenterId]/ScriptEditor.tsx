@@ -1078,6 +1078,7 @@ export default function ScriptEditor({
                   </span>
 
                   {planInfo.plan === "free" && (
+                    
                     <>
                       <span className="text-white/30">•</span>
                       <button

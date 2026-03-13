@@ -1,4 +1,3 @@
-// app/api/stripe/checkout/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
@@ -19,17 +18,13 @@ function getPriceIdForPlan(plan: string): { plan: PlanKey; priceId: string } | n
 
   if (normalized === "pro") {
     const priceId = getEnv("STRIPE_PRICE_ID_PRO");
-    if (!priceId) {
-      throw new Error("Missing STRIPE_PRICE_ID_PRO");
-    }
+    if (!priceId) throw new Error("Missing STRIPE_PRICE_ID_PRO");
     return { plan: "pro", priceId };
   }
 
   if (normalized === "business") {
     const priceId = getEnv("STRIPE_PRICE_ID_BUSINESS");
-    if (!priceId) {
-      throw new Error("Missing STRIPE_PRICE_ID_BUSINESS");
-    }
+    if (!priceId) throw new Error("Missing STRIPE_PRICE_ID_BUSINESS");
     return { plan: "business", priceId };
   }
 
