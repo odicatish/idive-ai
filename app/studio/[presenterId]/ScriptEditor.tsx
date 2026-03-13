@@ -383,7 +383,6 @@ export default function ScriptEditor({
 
   useEffect(() => {
     return () => stopVideoPolling();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -393,8 +392,6 @@ export default function ScriptEditor({
       const j = await checkVideoStatus();
       if (j && !isTerminalJobStatus(j.status)) startVideoPolling();
     })();
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presenterId]);
 
   useEffect(() => {
@@ -406,11 +403,7 @@ export default function ScriptEditor({
       .then(async (r) => {
         const data = await r.json().catch(() => null);
         if (!r.ok || !data) return;
-        if (
-          data.plan === "free" ||
-          data.plan === "pro" ||
-          data.plan === "business"
-        ) {
+        if (data.plan === "free" || data.plan === "pro" || data.plan === "business") {
           setPlanInfo({
             plan: data.plan,
             video_limit: Number(data.video_limit ?? 0),
@@ -444,9 +437,7 @@ export default function ScriptEditor({
       setVersions(list);
 
       if (list.length > 0) {
-        const stillExists = selectedVersionId
-          ? list.some((v) => v.id === selectedVersionId)
-          : false;
+        const stillExists = selectedVersionId ? list.some((v) => v.id === selectedVersionId) : false;
         if (!selectedVersionId || !stillExists) {
           setSelectedVersionId(list[0].id);
         }
@@ -532,7 +523,6 @@ export default function ScriptEditor({
   useEffect(() => {
     if (!historyOpen) return;
     void loadVersions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyOpen, presenterId]);
 
   useEffect(() => {
@@ -557,8 +547,7 @@ export default function ScriptEditor({
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [dirty]);
 
   const lsKey = `idive:draft:${presenterId || "unknown"}`;
 
@@ -569,8 +558,7 @@ export default function ScriptEditor({
         setDraft(saved);
       }
     } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lsKey]);
+  }, [lsKey, script.content]);
 
   useEffect(() => {
     try {
@@ -646,8 +634,7 @@ export default function ScriptEditor({
       return;
     }
     if (dirty && status !== "offline") debouncedSave();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft]);
+  }, [draft, dirty, status, debouncedSave]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -659,7 +646,6 @@ export default function ScriptEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draft, script.version, status, presenterId]);
 
   const [ctx, setCtx] = useState<ContextState>(() => ({
@@ -728,8 +714,7 @@ export default function ScriptEditor({
 
   useEffect(() => {
     if (ctxDirty && status !== "offline") debouncedSaveContext();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx]);
+  }, [ctx, ctxDirty, status, debouncedSaveContext]);
 
   const generateScript = async () => {
     if (status === "offline") return;
@@ -825,6 +810,33 @@ export default function ScriptEditor({
       alert("Could not start checkout.");
     } finally {
       setCheckoutBusyPlan(null);
+    }
+  };
+
+  const openBillingPortal = async () => {
+    try {
+      const res = await fetch("/api/stripe/portal", {
+        method: "POST",
+        credentials: "include",
+      });
+
+      const payload = await safeJson(res);
+
+      if (!res.ok) {
+        console.error("PORTAL_ERROR", payload);
+        alert(payload?.error ?? "Could not open billing portal.");
+        return;
+      }
+
+      if (!payload?.url || typeof payload.url !== "string") {
+        alert("Missing billing portal URL.");
+        return;
+      }
+
+      window.location.href = payload.url;
+    } catch (e) {
+      console.error("PORTAL_THROW", e);
+      alert("Could not open billing portal.");
     }
   };
 
@@ -1121,6 +1133,16 @@ export default function ScriptEditor({
               >
                 Version History
               </button>
+
+              {planInfo?.active && (
+                <button
+                  onClick={() => void openBillingPortal()}
+                  className="rounded-full px-4 py-2 text-sm font-semibold transition border border-white/12 bg-white/5 hover:bg-white/10"
+                  type="button"
+                >
+                  Manage Subscription
+                </button>
+              )}
 
               <button
                 onClick={() => void generateScript()}
