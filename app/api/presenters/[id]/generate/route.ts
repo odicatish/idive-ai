@@ -5,6 +5,8 @@ import type OpenAI from "openai";
 
 export const runtime = "nodejs";
 
+type RouteParams = { id: string } | Promise<{ id: string }>;
+
 async function safeJson(req: Request) {
   try {
     return await req.json();
@@ -17,11 +19,14 @@ function jsonError(status: number, error: string, details?: any) {
   return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
-function getPresenterId(req: Request, context: any) {
-  const fromParams = context?.params?.id;
+async function getPresenterId(req: Request, params: RouteParams) {
+  const resolved = await Promise.resolve(params).catch(() => null);
+  const fromParams = resolved?.id;
+
   if (typeof fromParams === "string" && fromParams.trim()) {
     return decodeURIComponent(fromParams).trim();
   }
+
   try {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -480,8 +485,8 @@ async function detectLanguageTag(openai: OpenAI, text: string) {
   }
 }
 
-export async function POST(req: Request, context: any) {
-  const presenterId = getPresenterId(req, context);
+export async function POST(req: Request, ctx: { params: RouteParams }) {
+  const presenterId = await getPresenterId(req, ctx.params);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
 
   const body = await safeJson(req);

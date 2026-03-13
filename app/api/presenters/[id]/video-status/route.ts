@@ -6,12 +6,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+type RouteParams = { id: string } | Promise<{ id: string }>;
+
 function jsonError(status: number, error: string, details?: any) {
   return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
-function getPresenterId(req: Request, context: any) {
-  const fromParams = context?.params?.id;
+async function getPresenterId(req: Request, params: RouteParams) {
+  const resolved = await Promise.resolve(params).catch(() => null);
+  const fromParams = resolved?.id;
+
   if (typeof fromParams === "string" && fromParams.trim()) {
     return decodeURIComponent(fromParams).trim();
   }
@@ -20,7 +24,8 @@ function getPresenterId(req: Request, context: any) {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const idx = parts.indexOf("presenters");
-    return idx >= 0 ? parts[idx + 1] : "";
+    const fromUrl = idx >= 0 ? parts[idx + 1] : "";
+    return decodeURIComponent(String(fromUrl ?? "")).trim();
   } catch {
     return "";
   }
@@ -53,7 +58,6 @@ function isProcessing(s: string) {
   return v === "processing" || v === "running";
 }
 
-/** Progres “real” pipeline (media pe pași) */
 function computePipelineProgress(steps: StepRow[]) {
   if (!steps || steps.length === 0) return { status: "queued", progress: 0 };
 
@@ -104,18 +108,15 @@ function computePipelineProgress(steps: StepRow[]) {
   return { status: anyProc ? "processing" : "queued", progress: p };
 }
 
-/**
- * ✅ UI mapping corect:
- * - COMPLETED doar când MP4 există
- * - dacă voiceover e gata dar MP4 nu e încă => PROCESSING (ca polling-ul să continue)
- */
 function computeUiStatus(steps: StepRow[], hasMp4: boolean) {
   if (hasMp4) return { status: "completed", progress: 100 };
 
   const vo = steps?.find((s) => s.step === "voiceover");
   const st = normStatus(vo?.status);
 
-  if (st === "failed") return { status: "failed", progress: Math.max(0, Number(vo?.progress ?? 0)) };
+  if (st === "failed") {
+    return { status: "failed", progress: Math.max(0, Number(vo?.progress ?? 0)) };
+  }
 
   if (st === "completed") return { status: "processing", progress: 95 };
 
@@ -127,17 +128,15 @@ function computeUiStatus(steps: StepRow[], hasMp4: boolean) {
   return { status: "queued", progress: 0 };
 }
 
-export async function GET(req: Request, context: any) {
-  const presenterId = getPresenterId(req, context);
+export async function GET(req: Request, ctx: { params: RouteParams }) {
+  const presenterId = await getPresenterId(req, ctx.params);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
 
   const supabase = await supabaseServer();
 
-  // auth (user)
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) return jsonError(401, "unauthorized");
 
-  // verify presenter owner
   const { data: presenter, error: pErr } = await supabase
     .from("presenters")
     .select("id,user_id")
@@ -150,7 +149,6 @@ export async function GET(req: Request, context: any) {
   const url = new URL(req.url);
   const jobId = (url.searchParams.get("jobId") || "").trim();
 
-  // 1) legacy job (latest)
   let q = supabase
     .from("presenter_video_jobs")
     .select(
@@ -166,7 +164,6 @@ export async function GET(req: Request, context: any) {
   const job = jobs?.[0];
   if (!job) return jsonError(404, "job_missing");
 
-  // 2) pipeline job legat (dacă există)
   const { data: pipelineJob, error: pjErr } = await supabase
     .from("video_render_jobs")
     .select("id,status,progress,legacy_job_id")
@@ -215,7 +212,6 @@ export async function GET(req: Request, context: any) {
     });
   }
 
-  // 3) pipeline steps
   const { data: stepsRaw, error: stepsErr } = await supabase
     .from("video_render_steps")
     .select("step,status,progress,started_at,completed_at,updated_at,error_message")
@@ -224,7 +220,6 @@ export async function GET(req: Request, context: any) {
 
   const steps: StepRow[] = Array.isArray(stepsRaw) ? (stepsRaw as any) : [];
 
-  // 4) ✅ MP4 signed URL via SERVICE ROLE (important for private bucket/policies)
   const mp4Bucket = "renders";
   const mp4Path = `videos/${pipelineJob.id}.mp4`;
 
@@ -242,7 +237,6 @@ export async function GET(req: Request, context: any) {
     mp4SignErr = e?.message ?? String(e);
   }
 
-  // fallback audio (din DB) — doar dacă MP4 nu e încă disponibil
   let audioUrl: string | null = null;
   let audioErr: string | null = null;
 
@@ -266,7 +260,6 @@ export async function GET(req: Request, context: any) {
   const hasMp4 = !!mp4Url;
   const pipelineVideoUrl = mp4Url ?? audioUrl ?? null;
 
-  // dacă steps fetch a dat eroare, păstrăm minimul, dar tot preferăm MP4 dacă există
   if (stepsErr) {
     const p = Number(job.progress ?? pipelineJob.progress ?? 0);
     const ui = hasMp4 ? { status: "completed", progress: 100 } : { status: job.status, progress: p };
@@ -304,8 +297,8 @@ export async function GET(req: Request, context: any) {
 
   const ui = computeUiStatus(steps, hasMp4);
   const computedPipeline = hasMp4
-  ? { status: "completed", progress: 100 }
-  : computePipelineProgress(steps);
+    ? { status: "completed", progress: 100 }
+    : computePipelineProgress(steps);
 
   return NextResponse.json({
     job: {

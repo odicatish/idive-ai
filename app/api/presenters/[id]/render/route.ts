@@ -4,12 +4,16 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
+type RouteParams = { id: string } | Promise<{ id: string }>;
+
 function jsonError(status: number, error: string, details?: any) {
   return NextResponse.json({ error, ...(details ? { details } : {}) }, { status });
 }
 
-function getPresenterId(req: Request, context: any) {
-  const fromParams = context?.params?.id;
+async function getPresenterId(req: Request, params: RouteParams) {
+  const resolved = await Promise.resolve(params).catch(() => null);
+  const fromParams = resolved?.id;
+
   if (typeof fromParams === "string" && fromParams.trim()) {
     return decodeURIComponent(fromParams).trim();
   }
@@ -18,7 +22,8 @@ function getPresenterId(req: Request, context: any) {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const idx = parts.indexOf("presenters");
-    return idx >= 0 ? parts[idx + 1] : "";
+    const fromUrl = idx >= 0 ? parts[idx + 1] : "";
+    return decodeURIComponent(String(fromUrl ?? "")).trim();
   } catch {
     return "";
   }
@@ -86,8 +91,8 @@ function getPlanAndLimit(priceId: string | null, status: string | null) {
   return { plan: "free", limit: 1 };
 }
 
-export async function GET(req: Request, context: any) {
-  const presenterId = getPresenterId(req, context);
+export async function GET(req: Request, ctx: { params: RouteParams }) {
+  const presenterId = await getPresenterId(req, ctx.params);
   return NextResponse.json(
     {
       error: "method_not_allowed",
@@ -99,8 +104,8 @@ export async function GET(req: Request, context: any) {
   );
 }
 
-export async function POST(req: Request, context: any) {
-  const presenterId = getPresenterId(req, context);
+export async function POST(req: Request, ctx: { params: RouteParams }) {
+  const presenterId = await getPresenterId(req, ctx.params);
   if (!presenterId) return jsonError(400, "invalid_presenter_id");
 
   const supabase = await supabaseServer();
